@@ -1,0 +1,9 @@
+.DS_Store
+
+.run/
+
+backend/target/
+backend/data/
+
+frontend/node_modules/
+AGENTS.md

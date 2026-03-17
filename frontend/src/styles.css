@@ -1,0 +1,74 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 206, 128, 0.45), transparent 30%),
+    linear-gradient(135deg, #f7f3e8 0%, #dce8f5 100%);
+  color: #16233b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.panel {
+  width: min(560px, 100%);
+  padding: 40px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(22, 35, 59, 0.12);
+  box-shadow: 0 24px 80px rgba(22, 35, 59, 0.12);
+  backdrop-filter: blur(12px);
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #b4542f;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2rem, 5vw, 3rem);
+}
+
+.description {
+  margin: 16px 0 24px;
+  line-height: 1.6;
+}
+
+.action {
+  border: none;
+  border-radius: 999px;
+  padding: 14px 20px;
+  font: inherit;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, #1d4ed8, #b4542f);
+  cursor: pointer;
+}
+
+.result {
+  margin: 24px 0 0;
+  padding: 16px;
+  min-height: 120px;
+  border-radius: 16px;
+  background: #16233b;
+  color: #eff6ff;
+  overflow: auto;
+}
