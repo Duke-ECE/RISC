@@ -35,6 +35,8 @@ type GameView = {
   lastLog: string[];
   turnNumber: number;
   readyForOrders: boolean;
+  roomId: string | null;
+  waitingOnPlayers: string[];
 };
 
 type PlannedOrder = {
@@ -61,6 +63,11 @@ let selectedMode: OrderType = "MOVE";
 let selectedUnits = 1;
 let message = "";
 let cursorIndex = 0;
+let roomId: string | null = localStorage.getItem("risc_room_id");
+let roomToken: string | null = localStorage.getItem("risc_room_token");
+let joinRoomInput = "";
+let pollHandle: number | null = null;
+let pollInFlight = false;
 
 const state = {
   mode: "loading",
@@ -75,9 +82,15 @@ const ownerPalette: Record<string, string> = {
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+  if (roomToken) {
+    headers["X-Player-Token"] = roomToken;
+  }
   const response = await fetch(`http://127.0.0.1:8080${path}`, {
     headers: {
-      "Content-Type": "application/json"
+      ...headers
     },
     ...init
   });
@@ -92,6 +105,10 @@ function localPlayer(): Player | undefined {
   return game?.players.find((player) => player.localPlayer);
 }
 
+function localPlayerId(): string {
+  return localPlayer()?.id ?? "GREEN";
+}
+
 function territoryByName(name: string | null): Territory | undefined {
   return game?.territories.find((territory) => territory.name === name);
 }
@@ -104,7 +121,8 @@ function cursorTerritory(): Territory | undefined {
 }
 
 function ownTerritories(): Territory[] {
-  return game?.territories.filter((territory) => territory.owner === "GREEN") ?? [];
+  const id = localPlayerId();
+  return game?.territories.filter((territory) => territory.owner === id) ?? [];
 }
 
 function isAdjacent(source: Territory, target: Territory): boolean {
@@ -136,7 +154,11 @@ function setMessage(next: string): void {
 }
 
 async function loadGame(): Promise<void> {
-  game = await api<GameView>("/api/game");
+  if (roomId && roomToken) {
+    game = await api<GameView>(`/api/rooms/${roomId}`);
+  } else {
+    game = await api<GameView>("/api/game");
+  }
   initializeSetupAllocations();
   state.mode = "ready";
   render();
@@ -155,7 +177,11 @@ function initializeSetupAllocations(): void {
 }
 
 async function resetGame(): Promise<void> {
-  game = await api<GameView>("/api/game/reset", { method: "POST" });
+  if (roomId && roomToken) {
+    game = await api<GameView>(`/api/rooms/${roomId}/reset`, { method: "POST" });
+  } else {
+    game = await api<GameView>("/api/game/reset", { method: "POST" });
+  }
   plannedOrders = [];
   selectedSource = null;
   selectedTarget = null;
@@ -180,15 +206,21 @@ async function commitSetup(): Promise<void> {
       }
       setupAllocations = next;
     }
-    game = await api<GameView>("/api/game/setup", {
-      method: "POST",
-      body: JSON.stringify({ allocations: setupAllocations })
-    });
+    const payload = JSON.stringify({ allocations: setupAllocations });
+    if (roomId && roomToken) {
+      game = await api<GameView>(`/api/rooms/${roomId}/setup`, { method: "POST", body: payload });
+    } else {
+      game = await api<GameView>("/api/game/setup", { method: "POST", body: payload });
+    }
     plannedOrders = [];
     selectedSource = null;
     selectedTarget = null;
     selectedUnits = 1;
-    setMessage("Setup locked in. Blue and Red have revealed their placements.");
+    if (roomId && roomToken && game.phase === "SETUP" && game.waitingOnPlayers.length > 0) {
+      setMessage(`Setup submitted. Waiting on: ${game.waitingOnPlayers.join(", ")}.`);
+    } else {
+      setMessage("Setup locked in. Opponents have revealed their placements.");
+    }
   } catch (error) {
     setMessage((error as Error).message);
   }
@@ -204,11 +236,11 @@ function queueOrder(): void {
   if (!source || !target) {
     return;
   }
-  if (selectedMode === "MOVE" && target.owner !== "GREEN") {
+  if (selectedMode === "MOVE" && target.owner !== localPlayerId()) {
     setMessage("Move orders can only target your own territories.");
     return;
   }
-  if (selectedMode === "ATTACK" && target.owner === "GREEN") {
+  if (selectedMode === "ATTACK" && target.owner === localPlayerId()) {
     setMessage("Attack orders must target enemy territories.");
     return;
   }
@@ -233,22 +265,30 @@ function queueOrder(): void {
 
 async function commitTurn(): Promise<void> {
   try {
-    game = await api<GameView>("/api/game/turn", {
-      method: "POST",
-      body: JSON.stringify({
-        orders: plannedOrders.map((order) => ({
-          type: order.type,
-          source: order.source,
-          target: order.target,
-          units: order.units
-        }))
-      })
+    const payload = JSON.stringify({
+      orders: plannedOrders.map((order) => ({
+        type: order.type,
+        source: order.source,
+        target: order.target,
+        units: order.units
+      }))
     });
+    if (roomId && roomToken) {
+      game = await api<GameView>(`/api/rooms/${roomId}/turn`, { method: "POST", body: payload });
+    } else {
+      game = await api<GameView>("/api/game/turn", { method: "POST", body: payload });
+    }
     plannedOrders = [];
     selectedUnits = 1;
     selectedSource = null;
     selectedTarget = null;
-    setMessage(game.phase === "GAME_OVER" ? "The war is over." : "Turn resolved. Plan your next move.");
+    if (game.phase === "GAME_OVER") {
+      setMessage("The war is over.");
+    } else if (roomId && roomToken && game.waitingOnPlayers.length > 0) {
+      setMessage(`Orders submitted. Waiting on: ${game.waitingOnPlayers.join(", ")}.`);
+    } else {
+      setMessage("Turn resolved. Plan your next move.");
+    }
   } catch (error) {
     setMessage((error as Error).message);
   }
@@ -284,7 +324,7 @@ function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
   }
   cursorIndex = game.territories.findIndex((territory) => territory.name === clicked.name);
   if (!selectedSource) {
-    if (clicked.owner !== "GREEN") {
+    if (clicked.owner !== localPlayerId()) {
       setMessage("Choose one of your territories as the source.");
       return;
     }
@@ -471,7 +511,7 @@ function render(): void {
     ? `
       <section class="panel setup">
         <h2>Initial Placement</h2>
-        <p class="hint">Distribute your ${localPlayer()?.reserveUnits ?? 0} reserve units. Blue and Red stay hidden until you confirm.</p>
+        <p class="hint">Distribute your ${localPlayer()?.reserveUnits ?? 0} reserve units. Other players stay hidden until setup is locked in.</p>
         <div class="setup-grid">
           ${ownTerritories().map((territory) => `
             <div class="territory-stepper">
@@ -495,6 +535,26 @@ function render(): void {
     <section class="panel">
       <h1 class="title">RISC</h1>
       <p class="subtitle">Simultaneous turns, hidden commitments, and a very determined map of fantasy realms.</p>
+      <section class="controls">
+        <h2>Multiplayer</h2>
+        ${roomId && roomToken
+          ? `
+            <div class="row">
+              <span>Room: <strong>${roomId}</strong></span>
+              <span>You: <strong>${localPlayerId()}</strong></span>
+              <button class="secondary" id="leave-room">Leave</button>
+            </div>
+          `
+          : `
+            <div class="row">
+              <button id="create-room">Create room</button>
+              <input id="join-room-id" placeholder="Room ID (e.g. ABC123)" value="${joinRoomInput}" />
+              <button class="secondary" id="join-room">Join</button>
+            </div>
+            <div class="hint">Open a second window to join the same room and play as another color.</div>
+          `}
+        ${game.waitingOnPlayers.length > 0 ? `<div class="hint">Waiting on: ${game.waitingOnPlayers.join(", ")}</div>` : ""}
+      </section>
       ${setupHtml}
       <section class="controls">
         <h2>Orders</h2>
@@ -526,7 +586,7 @@ function render(): void {
             <strong>${player.displayName}</strong>
             <div>Territories: ${player.territories}</div>
             <div>Total units: ${player.totalUnits}</div>
-            <div>${player.defeated ? "Defeated" : player.localPlayer ? "You" : "AI opponent"}</div>
+            <div>${player.defeated ? "Defeated" : player.localPlayer ? "You" : roomId ? "Opponent" : "AI opponent"}</div>
           </article>`).join("")}
       </section>
       <section>
@@ -644,6 +704,34 @@ function render(): void {
       void toggleFullscreen();
     };
   }
+
+  const createRoomButton = document.querySelector<HTMLButtonElement>("#create-room");
+  if (createRoomButton) {
+    createRoomButton.onclick = () => {
+      void createRoom();
+    };
+  }
+
+  const joinRoomIdInputEl = document.querySelector<HTMLInputElement>("#join-room-id");
+  if (joinRoomIdInputEl) {
+    joinRoomIdInputEl.oninput = () => {
+      joinRoomInput = joinRoomIdInputEl.value;
+    };
+  }
+
+  const joinRoomButton = document.querySelector<HTMLButtonElement>("#join-room");
+  if (joinRoomButton) {
+    joinRoomButton.onclick = () => {
+      void joinRoom(joinRoomInput);
+    };
+  }
+
+  const leaveRoomButton = document.querySelector<HTMLButtonElement>("#leave-room");
+  if (leaveRoomButton) {
+    leaveRoomButton.onclick = () => {
+      leaveRoom();
+    };
+  }
 }
 
 window.addEventListener("keydown", (event) => {
@@ -704,7 +792,7 @@ window.addEventListener("keydown", (event) => {
       return;
     }
     if (!selectedSource) {
-      if (territory.owner !== "GREEN") {
+      if (territory.owner !== localPlayerId()) {
         setMessage("Choose one of your territories as the source.");
         return;
       }
@@ -733,3 +821,90 @@ window.addEventListener("keydown", (event) => {
 
 bindAutomationHooks();
 void loadGame();
+
+async function createRoom(): Promise<void> {
+  try {
+    const response = await api<{ roomId: string; playerId: string; token: string; game: GameView }>("/api/rooms", { method: "POST" });
+    roomId = response.roomId;
+    roomToken = response.token;
+    localStorage.setItem("risc_room_id", roomId);
+    localStorage.setItem("risc_room_token", roomToken);
+    game = response.game;
+    initializeSetupAllocations();
+    startPolling();
+    setMessage(`Created room ${roomId}.`);
+  } catch (error) {
+    setMessage((error as Error).message);
+  }
+}
+
+async function joinRoom(input: string): Promise<void> {
+  try {
+    const trimmed = (input ?? "").trim().toUpperCase();
+    if (!trimmed) {
+      setMessage("Enter a room ID to join.");
+      return;
+    }
+    const response = await api<{ roomId: string; playerId: string; token: string; game: GameView }>(`/api/rooms/${trimmed}/join`, { method: "POST" });
+    roomId = response.roomId;
+    roomToken = response.token;
+    localStorage.setItem("risc_room_id", roomId);
+    localStorage.setItem("risc_room_token", roomToken);
+    game = response.game;
+    initializeSetupAllocations();
+    startPolling();
+    setMessage(`Joined room ${roomId} as ${response.playerId}.`);
+  } catch (error) {
+    setMessage((error as Error).message);
+  }
+}
+
+function leaveRoom(): void {
+  roomId = null;
+  roomToken = null;
+  localStorage.removeItem("risc_room_id");
+  localStorage.removeItem("risc_room_token");
+  stopPolling();
+  plannedOrders = [];
+  setupAllocations = {};
+  setMessage("Left room. Back to single-player.");
+  void loadGame();
+}
+
+function startPolling(): void {
+  if (pollHandle != null) {
+    return;
+  }
+  pollHandle = window.setInterval(() => {
+    void pollOnce();
+  }, 1200);
+}
+
+function stopPolling(): void {
+  if (pollHandle == null) {
+    return;
+  }
+  window.clearInterval(pollHandle);
+  pollHandle = null;
+  pollInFlight = false;
+}
+
+async function pollOnce(): Promise<void> {
+  if (!roomId || !roomToken || pollInFlight) {
+    return;
+  }
+  pollInFlight = true;
+  try {
+    game = await api<GameView>(`/api/rooms/${roomId}`);
+    initializeSetupAllocations();
+    render();
+  } catch {
+    // Ignore transient polling errors.
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+if (roomId && roomToken) {
+  startPolling();
+}
