@@ -31,4 +31,3 @@ public class TerritoryState {
     this.units = units;
   }
 }
-

@@ -2,12 +2,12 @@ import "./style.css";
 import { groupLogEntries } from "./logSections";
 import { buildTurnSummary } from "./turnSummary";
 
-type Phase = "SETUP" | "ORDERS" | "GAME_OVER";
+type Phase = "LOBBY" | "SETUP" | "ORDERS" | "GAME_OVER";
 type OrderType = "MOVE" | "ATTACK";
 
 type Territory = {
   name: string;
-  owner: string;
+  owner: string | null;
   units: number;
   x: number;
   y: number;
@@ -56,7 +56,10 @@ const app = appRoot;
 
 let game: GameView | null = null;
 let setupAllocations: Record<string, number> = {};
-let plannedOrders: PlannedOrder[] = [];
+let plannedMoves: PlannedOrder[] = [];
+let plannedAttacks: PlannedOrder[] = [];
+let boardTerritories: Territory[] = [];
+let planningTurnNumber: number | null = null;
 let selectedSource: string | null = null;
 let selectedTarget: string | null = null;
 let selectedMode: OrderType = "MOVE";
@@ -64,8 +67,18 @@ let selectedUnits = 1;
 let message = "";
 let cursorIndex = 0;
 let roomId: string | null = localStorage.getItem("risc_room_id");
-let roomToken: string | null = localStorage.getItem("risc_room_token");
+let roomToken: string | null = sessionStorage.getItem("risc_room_token");
+const legacyToken = localStorage.getItem("risc_room_token");
+if (!roomToken && legacyToken) {
+  // Migrate old storage: token should be per-tab (sessionStorage), not shared across windows (localStorage).
+  roomToken = legacyToken;
+  sessionStorage.setItem("risc_room_token", legacyToken);
+  localStorage.removeItem("risc_room_token");
+}
 let joinRoomInput = "";
+if (roomId) {
+  joinRoomInput = roomId;
+}
 let pollHandle: number | null = null;
 let pollInFlight = false;
 
@@ -78,7 +91,10 @@ const state = {
 const ownerPalette: Record<string, string> = {
   GREEN: "#63885f",
   BLUE: "#7ea0be",
-  RED: "#bb6553"
+  RED: "#bb6553",
+  YELLOW: "#c7b15a",
+  PURPLE: "#8b6fb8",
+  UNOWNED: "#ffffff"
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -88,15 +104,19 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (roomToken) {
     headers["X-Player-Token"] = roomToken;
   }
-  const response = await fetch(`http://127.0.0.1:8080${path}`, {
-    headers: {
-      ...headers
-    },
-    ...init
-  });
-  const payload = await response.json();
-  if (!response.ok || (payload && typeof payload.error === "string")) {
-    throw new Error(payload.error ?? "Request failed");
+  const response = await fetch(`http://127.0.0.1:8080${path}`, { headers: { ...headers }, ...init });
+  const raw = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = raw ? JSON.parse(raw) : null;
+  } catch {
+    payload = { error: raw || "Request failed" };
+  }
+  const payloadError = typeof payload === "object" && payload != null && "error" in payload && typeof (payload as { error: unknown }).error === "string"
+    ? String((payload as { error: unknown }).error)
+    : null;
+  if (!response.ok || payloadError) {
+    throw new Error(payloadError ?? "Request failed");
   }
   return payload as T;
 }
@@ -109,35 +129,79 @@ function localPlayerId(): string {
   return localPlayer()?.id ?? "GREEN";
 }
 
+function activeTerritories(): Territory[] {
+  if (!game) {
+    return [];
+  }
+  if (game.phase === "ORDERS" && boardTerritories.length > 0) {
+    return boardTerritories;
+  }
+  return game.territories ?? [];
+}
+
 function territoryByName(name: string | null): Territory | undefined {
-  return game?.territories.find((territory) => territory.name === name);
+  return activeTerritories().find((territory) => territory.name === name);
 }
 
 function cursorTerritory(): Territory | undefined {
-  if (!game || game.territories.length === 0) {
+  const territories = activeTerritories();
+  if (!game || territories.length === 0) {
     return undefined;
   }
-  return game.territories[((cursorIndex % game.territories.length) + game.territories.length) % game.territories.length];
+  return territories[((cursorIndex % territories.length) + territories.length) % territories.length];
 }
 
 function ownTerritories(): Territory[] {
   const id = localPlayerId();
-  return game?.territories.filter((territory) => territory.owner === id) ?? [];
+  return activeTerritories().filter((territory) => territory.owner === id);
 }
 
 function isAdjacent(source: Territory, target: Territory): boolean {
   return source.neighbors.includes(target.name);
 }
 
+function hasFriendlyPath(sourceName: string, targetName: string): boolean {
+  if (sourceName === targetName) {
+    return true;
+  }
+  const territories = activeTerritories();
+  const byName = new Map(territories.map((territory) => [territory.name, territory]));
+  const player = localPlayerId();
+  const queue: string[] = [sourceName];
+  const visited = new Set<string>([sourceName]);
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const territory = byName.get(current);
+    if (!territory) {
+      continue;
+    }
+    for (const neighborName of territory.neighbors) {
+      const neighbor = byName.get(neighborName);
+      if (!neighbor || neighbor.owner !== player) {
+        continue;
+      }
+      if (visited.has(neighborName)) {
+        continue;
+      }
+      if (neighborName === targetName) {
+        return true;
+      }
+      visited.add(neighborName);
+      queue.push(neighborName);
+    }
+  }
+  return false;
+}
+
 function availableFromSource(name: string): number {
   const territory = territoryByName(name);
   if (!territory) {
-    return 1;
+    return 0;
   }
-  const committed = plannedOrders
+  const reservedForAttacks = plannedAttacks
     .filter((order) => order.source === name)
     .reduce((sum, order) => sum + order.units, 0);
-  return Math.max(1, territory.units - committed - 1);
+  return Math.max(0, territory.units - reservedForAttacks);
 }
 
 function setupLeft(): number {
@@ -157,11 +221,35 @@ async function loadGame(): Promise<void> {
   if (roomId && roomToken) {
     game = await api<GameView>(`/api/rooms/${roomId}`);
   } else {
-    game = await api<GameView>("/api/game");
+    game = null;
+    render();
+    return;
   }
   initializeSetupAllocations();
+  syncPlanningState();
   state.mode = "ready";
   render();
+}
+
+async function safeLoadGame(): Promise<void> {
+  try {
+    await loadGame();
+  } catch (error) {
+    // Stale room/token is common after backend restart; clear and try again once.
+    if (roomId && roomToken) {
+      roomId = null;
+      roomToken = null;
+      localStorage.removeItem("risc_room_id");
+      sessionStorage.removeItem("risc_room_token");
+      try {
+        await loadGame();
+        return;
+      } catch {
+        // fall through
+      }
+    }
+    setMessage(`Failed to load: ${(error as Error).message}`);
+  }
 }
 
 function initializeSetupAllocations(): void {
@@ -176,18 +264,66 @@ function initializeSetupAllocations(): void {
   setupAllocations = next;
 }
 
+function syncPlanningState(): void {
+  if (!game || game.phase !== "ORDERS") {
+    boardTerritories = [];
+    plannedMoves = [];
+    plannedAttacks = [];
+    planningTurnNumber = null;
+    return;
+  }
+
+  if (planningTurnNumber !== game.turnNumber) {
+    plannedMoves = [];
+    plannedAttacks = [];
+    planningTurnNumber = game.turnNumber;
+    selectedSource = null;
+    selectedTarget = null;
+    selectedUnits = 1;
+  }
+
+  boardTerritories = game.territories.map((territory) => ({
+    ...territory,
+    neighbors: [...territory.neighbors]
+  }));
+
+  for (const move of plannedMoves) {
+    applyMoveLocally(move);
+  }
+}
+
+function applyMoveLocally(move: PlannedOrder): void {
+  const source = boardTerritories.find((territory) => territory.name === move.source);
+  const target = boardTerritories.find((territory) => territory.name === move.target);
+  if (!source || !target) {
+    return;
+  }
+  source.units = Math.max(0, source.units - move.units);
+  if (source.units === 0) {
+    source.owner = null;
+  }
+  if (target.owner == null && move.units > 0) {
+    target.owner = localPlayerId();
+  }
+  target.units += move.units;
+}
+
 async function resetGame(): Promise<void> {
   if (roomId && roomToken) {
     game = await api<GameView>(`/api/rooms/${roomId}/reset`, { method: "POST" });
   } else {
     game = await api<GameView>("/api/game/reset", { method: "POST" });
   }
-  plannedOrders = [];
+  plannedMoves = [];
+  plannedAttacks = [];
+  boardTerritories = [];
+  planningTurnNumber = null;
   selectedSource = null;
   selectedTarget = null;
   selectedUnits = 1;
   setMessage("");
   initializeSetupAllocations();
+  syncPlanningState();
   render();
 }
 
@@ -212,10 +348,14 @@ async function commitSetup(): Promise<void> {
     } else {
       game = await api<GameView>("/api/game/setup", { method: "POST", body: payload });
     }
-    plannedOrders = [];
+    plannedMoves = [];
+    plannedAttacks = [];
+    boardTerritories = [];
+    planningTurnNumber = null;
     selectedSource = null;
     selectedTarget = null;
     selectedUnits = 1;
+    syncPlanningState();
     if (roomId && roomToken && game.phase === "SETUP" && game.waitingOnPlayers.length > 0) {
       setMessage(`Setup submitted. Waiting on: ${game.waitingOnPlayers.join(", ")}.`);
     } else {
@@ -236,18 +376,6 @@ function queueOrder(): void {
   if (!source || !target) {
     return;
   }
-  if (selectedMode === "MOVE" && target.owner !== localPlayerId()) {
-    setMessage("Move orders can only target your own territories.");
-    return;
-  }
-  if (selectedMode === "ATTACK" && target.owner === localPlayerId()) {
-    setMessage("Attack orders must target enemy territories.");
-    return;
-  }
-  if (selectedMode === "ATTACK" && !isAdjacent(source, target)) {
-    setMessage("Attack orders must target adjacent territories.");
-    return;
-  }
   const maxUnits = availableFromSource(selectedSource);
   if (selectedUnits < 1 || selectedUnits > maxUnits) {
     setMessage("That territory does not have enough spare units.");
@@ -255,18 +383,45 @@ function queueOrder(): void {
   }
   const queuedSource = selectedSource;
   const queuedTarget = selectedTarget;
-  plannedOrders = [...plannedOrders, { type: selectedMode, source: queuedSource, target: queuedTarget, units: selectedUnits }];
+  if (selectedMode === "MOVE") {
+    if (target.owner !== localPlayerId() && target.owner !== null) {
+      setMessage("Move can only target your own territories or an unoccupied territory.");
+      return;
+    }
+    if (target.owner === null && !isAdjacent(source, target)) {
+      setMessage("Moves into unoccupied territories must be adjacent.");
+      return;
+    }
+    if (target.owner === localPlayerId() && !hasFriendlyPath(source.name, target.name)) {
+      setMessage("Moves into owned territories need a friendly path.");
+      return;
+    }
+    const move: PlannedOrder = { type: "MOVE", source: queuedSource, target: queuedTarget, units: selectedUnits };
+    plannedMoves = [...plannedMoves, move];
+    applyMoveLocally(move);
+    setMessage(`Moved ${selectedUnits} from ${queuedSource} to ${queuedTarget}.`);
+  } else {
+    if (target.owner === localPlayerId()) {
+      setMessage("Attack orders must target enemy or unoccupied territories.");
+      return;
+    }
+    if (!isAdjacent(source, target)) {
+      setMessage("Attack orders must target adjacent territories.");
+      return;
+    }
+    plannedAttacks = [...plannedAttacks, { type: "ATTACK", source: queuedSource, target: queuedTarget, units: selectedUnits }];
+    setMessage(`Queued attack ${selectedUnits} from ${queuedSource} to ${queuedTarget}.`);
+  }
   selectedSource = null;
   selectedTarget = null;
   selectedUnits = 1;
-  setMessage(`Queued ${selectedMode.toLowerCase()} from ${queuedSource} to ${queuedTarget}.`);
   render();
 }
 
 async function commitTurn(): Promise<void> {
   try {
     const payload = JSON.stringify({
-      orders: plannedOrders.map((order) => ({
+      orders: [...plannedMoves, ...plannedAttacks].map((order) => ({
         type: order.type,
         source: order.source,
         target: order.target,
@@ -278,10 +433,14 @@ async function commitTurn(): Promise<void> {
     } else {
       game = await api<GameView>("/api/game/turn", { method: "POST", body: payload });
     }
-    plannedOrders = [];
+    plannedMoves = [];
+    plannedAttacks = [];
+    boardTerritories = [];
+    planningTurnNumber = null;
     selectedUnits = 1;
     selectedSource = null;
     selectedTarget = null;
+    syncPlanningState();
     if (game.phase === "GAME_OVER") {
       setMessage("The war is over.");
     } else if (roomId && roomToken && game.waitingOnPlayers.length > 0) {
@@ -314,7 +473,7 @@ function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
   const scaleY = state.boardHeight / rect.height;
   const x = (event.clientX - rect.left) * scaleX;
   const y = (event.clientY - rect.top) * scaleY;
-  const clicked = game.territories.find((territory) => {
+  const clicked = activeTerritories().find((territory) => {
     const dx = territory.x - x;
     const dy = territory.y - y;
     return Math.sqrt(dx * dx + dy * dy) < 48;
@@ -322,10 +481,14 @@ function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
   if (!clicked) {
     return;
   }
-  cursorIndex = game.territories.findIndex((territory) => territory.name === clicked.name);
+  cursorIndex = activeTerritories().findIndex((territory) => territory.name === clicked.name);
   if (!selectedSource) {
     if (clicked.owner !== localPlayerId()) {
       setMessage("Choose one of your territories as the source.");
+      return;
+    }
+    if (availableFromSource(clicked.name) <= 0) {
+      setMessage("That territory has no units available to move or attack.");
       return;
     }
     selectedSource = clicked.name;
@@ -352,6 +515,7 @@ function drawBoard(canvas: HTMLCanvasElement): void {
   if (!context || !game) {
     return;
   }
+  const territories = activeTerritories();
 
   canvas.width = state.boardWidth;
   canvas.height = state.boardHeight;
@@ -374,7 +538,7 @@ function drawBoard(canvas: HTMLCanvasElement): void {
   context.lineWidth = 5;
   context.strokeStyle = "rgba(73, 58, 38, 0.28)";
   const seen = new Set<string>();
-  for (const territory of game.territories) {
+  for (const territory of territories) {
     for (const neighbor of territory.neighbors) {
       const key = [territory.name, neighbor].sort().join(":");
       if (seen.has(key)) {
@@ -392,13 +556,20 @@ function drawBoard(canvas: HTMLCanvasElement): void {
     }
   }
 
-  for (const territory of game.territories) {
-    const color = ownerPalette[territory.owner] ?? "#666";
+  for (const territory of territories) {
+    const ownerKey = territory.owner ?? "UNOWNED";
+    const color = ownerPalette[ownerKey] ?? "#666";
     const selected = territory.name === selectedSource || territory.name === selectedTarget;
     const hovered = territory.name === cursorTerritory()?.name;
     context.beginPath();
     context.fillStyle = color;
-    context.strokeStyle = selected ? "#fff3d1" : hovered ? "#1d2b2a" : "rgba(33, 20, 8, 0.3)";
+    context.strokeStyle = selected
+      ? "#fff3d1"
+      : hovered
+        ? "#1d2b2a"
+        : ownerKey === "UNOWNED"
+          ? "rgba(33, 20, 8, 0.55)"
+          : "rgba(33, 20, 8, 0.3)";
     context.lineWidth = selected ? 8 : hovered ? 6 : 4;
     context.arc(territory.x, territory.y, 43, 0, Math.PI * 2);
     context.fill();
@@ -428,7 +599,8 @@ function renderTextState(): string {
     mode: game.phase,
     turn: game.turnNumber,
     note: game.mapNote,
-    pendingOrders: plannedOrders,
+    pendingMoves: plannedMoves,
+    pendingAttacks: plannedAttacks,
     selection: {
       source: selectedSource,
       target: selectedTarget,
@@ -436,7 +608,7 @@ function renderTextState(): string {
       units: selectedUnits,
       cursor: cursorTerritory()?.name ?? null
     },
-    territories: game.territories.map((territory) => ({
+    territories: activeTerritories().map((territory) => ({
       name: territory.name,
       owner: territory.owner,
       units: territory.hidden ? "hidden" : territory.units,
@@ -503,7 +675,35 @@ async function toggleFullscreen(): Promise<void> {
 
 function render(): void {
   if (!game) {
-    app.innerHTML = `<section class="panel"><h1 class="title">RISC</h1><p>Loading battlefield...</p></section>`;
+    app.innerHTML = `
+      <section class="panel">
+        <h1 class="title">RISC</h1>
+        <div class="row">
+          <button id="create-room">Create room</button>
+          <input id="join-room-id" placeholder="Room ID (e.g. ABC123)" value="${joinRoomInput}" />
+          <button class="secondary" id="join-room">Join</button>
+        </div>
+        <div class="hint">${message || "Tip: open another window and Join the same Room ID to get a different player seat."}</div>
+      </section>
+    `;
+    const createBtn = document.querySelector<HTMLButtonElement>("#create-room");
+    if (createBtn) {
+      createBtn.onclick = () => {
+        void createRoom().catch(() => {});
+      };
+    }
+    const joinRoomIdInputEl = document.querySelector<HTMLInputElement>("#join-room-id");
+    if (joinRoomIdInputEl) {
+      joinRoomIdInputEl.oninput = () => {
+        joinRoomInput = joinRoomIdInputEl.value;
+      };
+    }
+    const joinBtn = document.querySelector<HTMLButtonElement>("#join-room");
+    if (joinBtn) {
+      joinBtn.onclick = () => {
+        void joinRoom(joinRoomInput).catch(() => {});
+      };
+    }
     return;
   }
 
@@ -528,8 +728,11 @@ function render(): void {
       </section>`
     : "";
 
-  const orderOptions = ownTerritories().map((territory) => `<option value="${territory.name}" ${selectedSource === territory.name ? "selected" : ""}>${territory.name}</option>`).join("");
-  const targetOptions = (game.territories ?? []).map((territory) => `<option value="${territory.name}" ${selectedTarget === territory.name ? "selected" : ""}>${territory.name}</option>`).join("");
+  const orderOptions = ownTerritories()
+    .filter((territory) => availableFromSource(territory.name) > 0)
+    .map((territory) => `<option value="${territory.name}" ${selectedSource === territory.name ? "selected" : ""}>${territory.name}</option>`)
+    .join("");
+  const targetOptions = activeTerritories().map((territory) => `<option value="${territory.name}" ${selectedTarget === territory.name ? "selected" : ""}>${territory.name}</option>`).join("");
 
   app.innerHTML = `
     <section class="panel">
@@ -543,7 +746,16 @@ function render(): void {
               <span>Room: <strong>${roomId}</strong></span>
               <span>You: <strong>${localPlayerId()}</strong></span>
               <button class="secondary" id="leave-room">Leave</button>
+              <button class="secondary" id="new-seat">New seat</button>
             </div>
+            ${game.phase === "LOBBY" && localPlayerId() === "GREEN"
+              ? `
+                <div class="row">
+                  <button id="start-game" ${game.players.length < 2 ? "disabled" : ""}>Start game</button>
+                  <span class="hint">Need at least 2 players (currently ${game.players.length}).</span>
+                </div>
+              `
+              : ""}
           `
           : `
             <div class="row">
@@ -558,7 +770,7 @@ function render(): void {
       ${setupHtml}
       <section class="controls">
         <h2>Orders</h2>
-        <p class="hint">Click territories on the map or use the selectors below. Keep one unit behind in every source territory.</p>
+        <p class="hint">Click territories on the map or use the selectors below. You may move/attack with all units (territories can become unoccupied).</p>
         <div class="buttons">
           <button class="${selectedMode === "MOVE" ? "" : "secondary"}" data-mode="MOVE">Move</button>
           <button class="${selectedMode === "ATTACK" ? "" : "secondary"}" data-mode="ATTACK">Attack</button>
@@ -573,7 +785,7 @@ function render(): void {
           <button id="queue-order" ${game.phase !== "ORDERS" ? "disabled" : ""}>Queue Order</button>
         </div>
         <div class="buttons">
-          <button class="secondary" id="clear-orders">Clear Planned Orders</button>
+          <button class="secondary" id="clear-orders">Clear Planned Actions</button>
           <button id="commit-turn" ${game.phase !== "ORDERS" ? "disabled" : ""}>Commit Turn</button>
           <button class="secondary" id="reset-game">New Game</button>
         </div>
@@ -590,10 +802,17 @@ function render(): void {
           </article>`).join("")}
       </section>
       <section>
-        <h2>Planned Orders</h2>
+        <h2>Queued Attacks</h2>
         <div class="log">
-          ${plannedOrders.length === 0 ? `<div class="log-entry">No queued orders yet.</div>` : plannedOrders.map((order) => `<div class="log-entry">${order.type} ${order.units} from ${order.source} to ${order.target}</div>`).join("")}
+          ${plannedAttacks.length === 0
+            ? `<div class="log-entry">No queued attacks yet.</div>`
+            : plannedAttacks.map((order, index) => `
+              <div class="log-entry">
+                ATTACK ${order.units} from ${order.source} to ${order.target}
+                <button class="secondary" data-attack-remove="${index}">Remove</button>
+              </div>`).join("")}
         </div>
+        <div class="hint">Moves apply immediately in your browser. Attacks resolve together when you commit.</div>
       </section>
       <section>
         <h2>Turn Changes</h2>
@@ -614,7 +833,7 @@ function render(): void {
           <strong>${game.phase === "GAME_OVER" ? `${game.winner} wins` : "Battle Map"}</strong>
           <div class="hint">${game.mapNote}</div>
         </div>
-        <div class="hint">Pending orders: ${plannedOrders.length}</div>
+        <div class="hint">Pending actions: ${plannedMoves.length + plannedAttacks.length}</div>
       </div>
       <canvas id="game-canvas" aria-label="RISC game board"></canvas>
     </section>
@@ -685,11 +904,25 @@ function render(): void {
   const clearButton = document.querySelector<HTMLButtonElement>("#clear-orders");
   if (clearButton) {
     clearButton.onclick = () => {
-      plannedOrders = [];
+      plannedMoves = [];
+      plannedAttacks = [];
+      syncPlanningState();
       selectedUnits = 1;
-      setMessage("Cleared planned orders.");
+      setMessage("Cleared planned actions.");
     };
   }
+
+  document.querySelectorAll<HTMLButtonElement>("[data-attack-remove]").forEach((button) => {
+    button.onclick = () => {
+      const index = Number(button.dataset.attackRemove ?? "-1");
+      if (Number.isNaN(index) || index < 0) {
+        return;
+      }
+      plannedAttacks = plannedAttacks.filter((_, i) => i !== index);
+      setMessage("Removed queued attack.");
+      render();
+    };
+  });
 
   const resetButton = document.querySelector<HTMLButtonElement>("#reset-game");
   if (resetButton) {
@@ -708,7 +941,7 @@ function render(): void {
   const createRoomButton = document.querySelector<HTMLButtonElement>("#create-room");
   if (createRoomButton) {
     createRoomButton.onclick = () => {
-      void createRoom();
+      void createRoom().catch(() => {});
     };
   }
 
@@ -722,7 +955,7 @@ function render(): void {
   const joinRoomButton = document.querySelector<HTMLButtonElement>("#join-room");
   if (joinRoomButton) {
     joinRoomButton.onclick = () => {
-      void joinRoom(joinRoomInput);
+      void joinRoom(joinRoomInput).catch(() => {});
     };
   }
 
@@ -730,6 +963,20 @@ function render(): void {
   if (leaveRoomButton) {
     leaveRoomButton.onclick = () => {
       leaveRoom();
+    };
+  }
+
+  const newSeatButton = document.querySelector<HTMLButtonElement>("#new-seat");
+  if (newSeatButton) {
+    newSeatButton.onclick = () => {
+      void joinAsNewSeat().catch(() => {});
+    };
+  }
+
+  const startGameButton = document.querySelector<HTMLButtonElement>("#start-game");
+  if (startGameButton) {
+    startGameButton.onclick = () => {
+      void startGame().catch(() => {});
     };
   }
 }
@@ -778,7 +1025,7 @@ window.addEventListener("keydown", (event) => {
       queueOrder();
       return;
     }
-    if (game.phase === "ORDERS" && plannedOrders.length > 0) {
+    if (game.phase === "ORDERS" && (plannedMoves.length + plannedAttacks.length) > 0) {
       void commitTurn();
     }
   }
@@ -794,6 +1041,10 @@ window.addEventListener("keydown", (event) => {
     if (!selectedSource) {
       if (territory.owner !== localPlayerId()) {
         setMessage("Choose one of your territories as the source.");
+        return;
+      }
+      if (availableFromSource(territory.name) <= 0) {
+        setMessage("That territory has no units available to move or attack.");
         return;
       }
       selectedSource = territory.name;
@@ -820,7 +1071,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 bindAutomationHooks();
-void loadGame();
+void safeLoadGame();
 
 async function createRoom(): Promise<void> {
   try {
@@ -828,13 +1079,15 @@ async function createRoom(): Promise<void> {
     roomId = response.roomId;
     roomToken = response.token;
     localStorage.setItem("risc_room_id", roomId);
-    localStorage.setItem("risc_room_token", roomToken);
+    sessionStorage.setItem("risc_room_token", roomToken);
     game = response.game;
     initializeSetupAllocations();
+    syncPlanningState();
     startPolling();
     setMessage(`Created room ${roomId}.`);
   } catch (error) {
     setMessage((error as Error).message);
+    throw error;
   }
 }
 
@@ -849,13 +1102,15 @@ async function joinRoom(input: string): Promise<void> {
     roomId = response.roomId;
     roomToken = response.token;
     localStorage.setItem("risc_room_id", roomId);
-    localStorage.setItem("risc_room_token", roomToken);
+    sessionStorage.setItem("risc_room_token", roomToken);
     game = response.game;
     initializeSetupAllocations();
+    syncPlanningState();
     startPolling();
     setMessage(`Joined room ${roomId} as ${response.playerId}.`);
   } catch (error) {
     setMessage((error as Error).message);
+    throw error;
   }
 }
 
@@ -863,12 +1118,55 @@ function leaveRoom(): void {
   roomId = null;
   roomToken = null;
   localStorage.removeItem("risc_room_id");
-  localStorage.removeItem("risc_room_token");
+  sessionStorage.removeItem("risc_room_token");
   stopPolling();
-  plannedOrders = [];
+  plannedMoves = [];
+  plannedAttacks = [];
+  boardTerritories = [];
+  planningTurnNumber = null;
   setupAllocations = {};
-  setMessage("Left room. Back to single-player.");
-  void loadGame();
+  setMessage("Left room.");
+  game = null;
+  render();
+}
+
+async function joinAsNewSeat(): Promise<void> {
+  if (!roomId) {
+    setMessage("No room to join.");
+    return;
+  }
+  roomToken = null;
+  sessionStorage.removeItem("risc_room_token");
+  stopPolling();
+  plannedMoves = [];
+  plannedAttacks = [];
+  boardTerritories = [];
+  planningTurnNumber = null;
+  setupAllocations = {};
+  await joinRoom(roomId);
+}
+
+async function startGame(): Promise<void> {
+  if (!roomId || !roomToken) {
+    setMessage("Create or join a room first.");
+    return;
+  }
+  try {
+    game = await api<GameView>(`/api/rooms/${roomId}/start`, { method: "POST" });
+    plannedMoves = [];
+    plannedAttacks = [];
+    boardTerritories = [];
+    planningTurnNumber = null;
+    selectedSource = null;
+    selectedTarget = null;
+    selectedUnits = 1;
+    initializeSetupAllocations();
+    syncPlanningState();
+    setMessage(game.phase === "SETUP" ? "Game started. Submit your setup." : "Game started.");
+  } catch (error) {
+    setMessage((error as Error).message);
+    throw error;
+  }
 }
 
 function startPolling(): void {
@@ -897,6 +1195,7 @@ async function pollOnce(): Promise<void> {
   try {
     game = await api<GameView>(`/api/rooms/${roomId}`);
     initializeSetupAllocations();
+    syncPlanningState();
     render();
   } catch {
     // Ignore transient polling errors.

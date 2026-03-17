@@ -4,10 +4,9 @@ import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.PlayerView;
 import com.risc.backend.game.dto.TerritoryView;
 import java.security.SecureRandom;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -20,33 +19,37 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class GameEngine {
+  private static final int BOARD_WIDTH = 920;
+  private static final int BOARD_HEIGHT = 620;
   private static final int STARTING_UNITS_PER_TERRITORY = 1;
   private static final int RESERVE_UNITS = 9;
-  private static final List<PlayerId> TURN_PLAYERS = List.of(PlayerId.GREEN, PlayerId.BLUE, PlayerId.RED);
-  private static final List<TerritoryDefinition> MAP = List.of(
-      new TerritoryDefinition("Narnia", 150, 130, PlayerId.GREEN, List.of("Midkemia", "Elantris")),
-      new TerritoryDefinition("Midkemia", 300, 155, PlayerId.GREEN, List.of("Narnia", "Elantris", "Scadrial", "Oz")),
-      new TerritoryDefinition("Oz", 470, 155, PlayerId.GREEN, List.of("Midkemia", "Scadrial", "Mordor", "Gondor")),
-      new TerritoryDefinition("Elantris", 170, 330, PlayerId.BLUE, List.of("Narnia", "Midkemia", "Scadrial", "Roshar")),
-      new TerritoryDefinition("Scadrial", 360, 300, PlayerId.BLUE, List.of("Elantris", "Roshar", "Hogwarts", "Mordor", "Oz", "Midkemia")),
-      new TerritoryDefinition("Roshar", 355, 430, PlayerId.BLUE, List.of("Elantris", "Scadrial", "Hogwarts")),
-      new TerritoryDefinition("Gondor", 610, 175, PlayerId.RED, List.of("Oz", "Mordor")),
-      new TerritoryDefinition("Mordor", 565, 320, PlayerId.RED, List.of("Oz", "Scadrial", "Hogwarts", "Gondor")),
-      new TerritoryDefinition("Hogwarts", 610, 430, PlayerId.RED, List.of("Roshar", "Scadrial", "Mordor")));
 
   private final Random random;
+  private final List<PlayerId> players;
+  private final List<TerritoryDefinition> map;
+
   private final Map<String, TerritoryState> territories = new LinkedHashMap<>();
   private final EnumMap<PlayerId, Integer> reserveUnits = new EnumMap<>(PlayerId.class);
+
   private List<String> lastLog = new ArrayList<>();
   private GamePhase phase = GamePhase.SETUP;
   private int turnNumber = 1;
   private PlayerId winner;
 
-  public GameEngine() {
-    this(new SecureRandom());
+  public GameEngine(List<PlayerId> players) {
+    this(players, new SecureRandom());
   }
 
-  public GameEngine(Random random) {
+  public GameEngine(List<PlayerId> players, Random random) {
+    this(players, MapGenerator.generate(players, BOARD_WIDTH, BOARD_HEIGHT, random), random);
+  }
+
+  public GameEngine(List<PlayerId> players, List<TerritoryDefinition> map, Random random) {
+    if (players == null || players.size() < 2 || players.size() > 5) {
+      throw new IllegalArgumentException("Player count must be between 2 and 5.");
+    }
+    this.players = List.copyOf(players);
+    this.map = List.copyOf(map);
     this.random = Objects.requireNonNull(random, "random");
     reset();
   }
@@ -70,10 +73,10 @@ public final class GameEngine {
   public synchronized void reset() {
     territories.clear();
     reserveUnits.clear();
-    for (TerritoryDefinition definition : MAP) {
+    for (TerritoryDefinition definition : map) {
       territories.put(definition.name(), new TerritoryState(definition, definition.initialOwner(), STARTING_UNITS_PER_TERRITORY));
     }
-    for (PlayerId playerId : TURN_PLAYERS) {
+    for (PlayerId playerId : players) {
       reserveUnits.put(playerId, RESERVE_UNITS);
     }
     phase = GamePhase.SETUP;
@@ -81,31 +84,19 @@ public final class GameEngine {
     turnNumber = 1;
     lastLog = new ArrayList<>(List.of(
         "New game started.",
-        "Place your 9 reserve units across your three starting territories.",
-        "Other players will place theirs secretly until setup is locked in."));
+        "Place your reserve units across your three starting territories.",
+        "All other players remain hidden until everyone locks in setup."));
   }
 
   public synchronized void commitPlacement(PlayerId playerId, Map<String, Integer> requestedAllocations) {
     ensurePhase(GamePhase.SETUP, "Setup is already finished.");
+    requirePlayer(playerId);
     Map<String, Integer> allocations = sanitizeAllocations(requestedAllocations, playerId);
     int total = allocations.values().stream().mapToInt(Integer::intValue).sum();
-    if (total != reserveUnits.get(playerId)) {
-      throw new IllegalArgumentException("You must place exactly " + reserveUnits.get(playerId) + " reserve units.");
+    if (total != reserveUnits.getOrDefault(playerId, 0)) {
+      throw new IllegalArgumentException("You must place exactly " + reserveUnits.getOrDefault(playerId, 0) + " reserve units.");
     }
     applyReserve(playerId, allocations);
-  }
-
-  public synchronized Map<String, Integer> buildAiPlacement(PlayerId playerId) {
-    List<String> owned = ownedTerritories(playerId).stream().map(TerritoryState::definition).map(TerritoryDefinition::name).toList();
-    Map<String, Integer> allocations = new LinkedHashMap<>();
-    int remaining = reserveUnits.get(playerId);
-    for (int i = 0; i < owned.size(); i++) {
-      String territory = owned.get(i);
-      int placed = i == owned.size() - 1 ? remaining : random.nextInt(remaining + 1);
-      allocations.put(territory, placed);
-      remaining -= placed;
-    }
-    return allocations;
   }
 
   public synchronized void startOrdersPhase(List<String> logLines) {
@@ -115,58 +106,9 @@ public final class GameEngine {
   }
 
   public synchronized void validateOrders(PlayerId playerId, List<OrderCommand> orders) {
+    ensurePhase(GamePhase.ORDERS, "Game is not accepting turn orders right now.");
+    requirePlayer(playerId);
     validateOrders(playerId, orders, territories);
-  }
-
-  public synchronized List<OrderCommand> buildAiOrders(PlayerId playerId) {
-    if (phase != GamePhase.ORDERS || winner != null || isDefeated(playerId)) {
-      return List.of();
-    }
-
-    List<OrderCommand> orders = new ArrayList<>();
-    Map<String, Integer> available = availableByTerritory(playerId, List.of(), List.of(), territories);
-
-    List<TerritoryState> borders = ownedTerritories(playerId).stream()
-        .filter(this::isBorderTerritory)
-        .sorted(Comparator.comparingInt(TerritoryState::units))
-        .toList();
-
-    for (TerritoryState border : borders) {
-      String helper = findFriendlyReinforcementSource(playerId, border.definition().name(), available);
-      if (helper != null) {
-        int movable = Math.max(0, available.get(helper) - 1);
-        if (movable > 1) {
-          int amount = Math.min(3, movable);
-          orders.add(new OrderCommand(OrderType.MOVE, helper, border.definition().name(), amount, playerId));
-          available.put(helper, available.get(helper) - amount);
-          available.put(border.definition().name(), available.get(border.definition().name()) + amount);
-          break;
-        }
-      }
-    }
-
-    for (TerritoryState source : ownedTerritories(playerId)) {
-      int movable = Math.max(0, available.getOrDefault(source.definition().name(), source.units()) - 1);
-      if (movable < 2) {
-        continue;
-      }
-      TerritoryState target = weakestEnemyNeighbor(source);
-      if (target == null) {
-        continue;
-      }
-      if (movable >= target.units() + 2) {
-        int amount = Math.min(movable, target.units() + 3);
-        orders.add(new OrderCommand(OrderType.ATTACK, source.definition().name(), target.definition().name(), amount, playerId));
-        available.put(source.definition().name(), available.get(source.definition().name()) - amount);
-      }
-    }
-
-    try {
-      validateOrders(playerId, orders, territories);
-      return orders;
-    } catch (IllegalArgumentException ignored) {
-      return List.of();
-    }
   }
 
   public synchronized void resolveCommittedTurn(List<OrderCommand> allOrders) {
@@ -180,7 +122,7 @@ public final class GameEngine {
     winner = findWinner();
     if (winner != null) {
       phase = GamePhase.GAME_OVER;
-      lastLog.add(winner.displayName() + " controls every territory and wins the game.");
+      lastLog.add(winner.displayName() + " is the last faction with territories and wins the game.");
     }
   }
 
@@ -188,7 +130,7 @@ public final class GameEngine {
     List<TerritoryView> territoryViews = territories.values().stream()
         .map(territory -> new TerritoryView(
             territory.definition().name(),
-            territory.owner().name(),
+            territory.owner() == null ? null : territory.owner().name(),
             phase == GamePhase.SETUP && territory.owner() != viewer ? 0 : territory.units(),
             territory.definition().x(),
             territory.definition().y(),
@@ -196,7 +138,7 @@ public final class GameEngine {
             phase == GamePhase.SETUP && territory.owner() != viewer))
         .toList();
 
-    List<PlayerView> players = TURN_PLAYERS.stream()
+    List<PlayerView> playerViews = players.stream()
         .map(playerId -> new PlayerView(
             playerId.name(),
             playerId.displayName(),
@@ -215,14 +157,20 @@ public final class GameEngine {
         phase.name(),
         viewer.name(),
         winner == null ? null : winner.name(),
-        "Canvas coordinates use origin at top-left, +x rightward, +y downward.",
+        "Simultaneous turns. Territories can be emptied (0 units) and become unoccupied.",
         territoryViews,
-        players,
+        playerViews,
         List.copyOf(lastLog),
         turnNumber,
         phase == GamePhase.ORDERS,
         roomId,
         waiting);
+  }
+
+  private void requirePlayer(PlayerId playerId) {
+    if (!players.contains(playerId)) {
+      throw new IllegalArgumentException("Unknown player: " + playerId);
+    }
   }
 
   private void applyReserve(PlayerId playerId, Map<String, Integer> allocations) {
@@ -245,24 +193,6 @@ public final class GameEngine {
     return sanitized;
   }
 
-  private String findFriendlyReinforcementSource(PlayerId playerId, String destination, Map<String, Integer> available) {
-    return ownedTerritories(playerId).stream()
-        .filter(territory -> !territory.definition().name().equals(destination))
-        .filter(territory -> available.getOrDefault(territory.definition().name(), territory.units()) > 1)
-        .filter(territory -> hasFriendlyPath(playerId, territory.definition().name(), destination))
-        .max(Comparator.comparingInt(territory -> available.getOrDefault(territory.definition().name(), territory.units())))
-        .map(territory -> territory.definition().name())
-        .orElse(null);
-  }
-
-  private TerritoryState weakestEnemyNeighbor(TerritoryState source) {
-    return source.definition().neighbors().stream()
-        .map(this::territory)
-        .filter(neighbor -> neighbor.owner() != source.owner())
-        .min(Comparator.comparingInt(TerritoryState::units))
-        .orElse(null);
-  }
-
   private List<String> resolveTurn(List<OrderCommand> allOrders) {
     Map<String, TerritoryState> battleMap = cloneTerritories();
     List<String> log = new ArrayList<>();
@@ -274,19 +204,84 @@ public final class GameEngine {
     appendOrderSection(log, "Committed move orders", moveOrders);
     appendOrderSection(log, "Committed attack orders", attackOrders);
 
+    // Move phase: apply departures first, then resolve arrivals. If multiple players arrive at the same territory,
+    // resolve combat like attacks.
+    Map<String, Integer> moveDepartures = new HashMap<>();
     for (OrderCommand move : moveOrders) {
-      TerritoryState source = battleMap.get(move.source());
-      TerritoryState target = battleMap.get(move.target());
-      int sourceBefore = source.units();
-      int targetBefore = target.units();
-      source.units(source.units() - move.units());
-      target.units(target.units() + move.units());
-      log.add(
-          move.playerId().displayName() + " MOVE " + move.units() + " from " + move.source() + " to " + move.target()
-              + " | " + move.source() + ": " + sourceBefore + " -> " + source.units()
-              + ", " + move.target() + ": " + targetBefore + " -> " + target.units() + ".");
+      moveDepartures.merge(move.source(), move.units(), Integer::sum);
+    }
+    for (Map.Entry<String, Integer> entry : moveDepartures.entrySet()) {
+      TerritoryState source = battleMap.get(entry.getKey());
+      int before = source.units();
+      source.units(source.units() - entry.getValue());
+      applyOccupancy(source);
+      log.add("Move departure: " + entry.getKey() + " commits " + entry.getValue() + " units, leaving " + before + " -> " + source.units() + ".");
     }
 
+    Map<String, Map<PlayerId, AttackGroup>> groupedMoveArrivals = new LinkedHashMap<>();
+    for (OrderCommand move : moveOrders) {
+      groupedMoveArrivals
+          .computeIfAbsent(move.target(), key -> new LinkedHashMap<>())
+          .computeIfAbsent(move.playerId(), key -> new AttackGroup(move.playerId(), move.target()))
+          .addSource(move.source(), move.units());
+    }
+
+    for (Map.Entry<String, Map<PlayerId, AttackGroup>> entry : groupedMoveArrivals.entrySet()) {
+      TerritoryState target = battleMap.get(entry.getKey());
+
+      // Friendly arrivals reinforce the defender before any fights.
+      if (target.owner() != null) {
+        AttackGroup friendly = entry.getValue().remove(target.owner());
+        if (friendly != null && friendly.totalUnits > 0) {
+          int before = target.units();
+          target.units(target.units() + friendly.totalUnits);
+          log.add("Move reinforcement: " + target.definition().name() + " receives " + friendly.totalUnits + " friendly units (" + before + " -> " + target.units() + ").");
+        }
+      }
+
+      List<AttackGroup> arrivals = new ArrayList<>(entry.getValue().values());
+      if (arrivals.isEmpty()) {
+        continue;
+      }
+      Collections.shuffle(arrivals, random);
+
+      log.add(
+          "Move contest at " + entry.getKey() + ": defender is " + (target.owner() == null ? "Unoccupied" : target.owner().displayName())
+              + " with " + target.units() + " units; arrival order = "
+              + arrivals.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
+
+      for (AttackGroup group : arrivals) {
+        if (target.owner() == null) {
+          target.owner(group.playerId);
+          target.units(group.totalUnits);
+          log.add("Occupation: " + group.playerId.displayName() + " takes " + target.definition().name() + " with " + group.totalUnits + " units.");
+          continue;
+        }
+        if (target.owner() == group.playerId) {
+          int before = target.units();
+          target.units(target.units() + group.totalUnits);
+          log.add("Move merge: " + group.playerId.displayName() + " adds " + group.totalUnits + " units into " + target.definition().name() + " (" + before + " -> " + target.units() + ").");
+          continue;
+        }
+        CombatResult result = fight(
+            group.playerId,
+            group.totalUnits,
+            target.owner(),
+            target.units(),
+            target.definition().name(),
+            group.sources);
+        log.addAll(result.details);
+        if (result.attackerWon) {
+          target.owner(group.playerId);
+          target.units(result.attackerUnitsRemaining);
+        } else {
+          target.units(result.defenderUnitsRemaining);
+        }
+        applyOccupancy(target);
+      }
+    }
+
+    // Attack departures happen before battle resolution.
     Map<String, Integer> attackDepartures = new HashMap<>();
     for (OrderCommand attack : attackOrders) {
       attackDepartures.merge(attack.source(), attack.units(), Integer::sum);
@@ -295,6 +290,7 @@ public final class GameEngine {
       TerritoryState source = battleMap.get(entry.getKey());
       int before = source.units();
       source.units(source.units() - entry.getValue());
+      applyOccupancy(source);
       log.add("Attack departure: " + entry.getKey() + " commits " + entry.getValue() + " units, leaving " + before + " -> " + source.units() + ".");
     }
 
@@ -311,11 +307,19 @@ public final class GameEngine {
       List<AttackGroup> attackers = new ArrayList<>(entry.getValue().values());
       Collections.shuffle(attackers, random);
       log.add(
-          "Battle queue at " + entry.getKey() + ": defender is " + defendingTerritory.owner().displayName()
+          "Battle queue at " + entry.getKey() + ": defender is " + (defendingTerritory.owner() == null ? "Unoccupied" : defendingTerritory.owner().displayName())
               + " with " + defendingTerritory.units() + " units; attack order = "
               + attackers.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
       for (AttackGroup attackGroup : attackers) {
-        if (attackGroup.playerId == defendingTerritory.owner()) {
+        if (defendingTerritory.owner() == attackGroup.playerId) {
+          continue;
+        }
+        if (defendingTerritory.owner() == null) {
+          defendingTerritory.owner(attackGroup.playerId);
+          defendingTerritory.units(attackGroup.totalUnits);
+          log.add(
+              "Occupation: " + attackGroup.playerId.displayName() + " takes " + defendingTerritory.definition().name()
+                  + " unopposed with " + attackGroup.totalUnits + " units.");
           continue;
         }
         CombatResult result = fight(
@@ -332,23 +336,36 @@ public final class GameEngine {
         } else {
           defendingTerritory.units(result.defenderUnitsRemaining);
         }
+        applyOccupancy(defendingTerritory);
       }
     }
 
     for (TerritoryState territory : battleMap.values()) {
+      if (territory.owner() == null) {
+        continue;
+      }
       int before = territory.units();
       territory.units(territory.units() + 1);
       log.add("Reinforcement: " + territory.definition().name() + " owned by " + territory.owner().displayName() + " gains 1 unit (" + before + " -> " + territory.units() + ").");
     }
+
     log.add("Turn " + turnNumber + " final map state:");
     for (TerritoryState territory : battleMap.values()) {
-      log.add(" - " + territory.definition().name() + ": " + territory.owner().displayName() + " holds " + territory.units() + " units.");
+      String owner = territory.owner() == null ? "Unoccupied" : territory.owner().displayName();
+      log.add(" - " + territory.definition().name() + ": " + owner + " holds " + territory.units() + " units.");
     }
 
     territories.clear();
     territories.putAll(battleMap);
     appendEliminationLog(log);
     return log;
+  }
+
+  private void applyOccupancy(TerritoryState territory) {
+    if (territory.units() <= 0) {
+      territory.units(0);
+      territory.owner(null);
+    }
   }
 
   private CombatResult fight(
@@ -408,7 +425,7 @@ public final class GameEngine {
   }
 
   private void appendEliminationLog(List<String> log) {
-    for (PlayerId playerId : TURN_PLAYERS) {
+    for (PlayerId playerId : players) {
       if (isDefeated(playerId)) {
         log.add(playerId.displayName() + " has no territories left and is defeated.");
       }
@@ -416,45 +433,86 @@ public final class GameEngine {
   }
 
   private void validateOrders(PlayerId playerId, List<OrderCommand> orders, Map<String, TerritoryState> state) {
-    Map<String, Integer> committedFromSource = new HashMap<>();
-    for (OrderCommand order : orders) {
+    // New rule: moves are applied immediately (sequentially) during planning; attacks are queued and resolved together.
+    // To validate "final total change", we simulate the submitted move sequence first, then validate attack reservations.
+    Map<String, TerritoryState> scratch = cloneTerritories(state);
+
+    List<OrderCommand> moveOrders = orders.stream().filter(order -> order.type() == OrderType.MOVE).toList();
+    List<OrderCommand> attackOrders = orders.stream().filter(order -> order.type() == OrderType.ATTACK).toList();
+
+    for (OrderCommand order : moveOrders) {
       if (order.playerId() != playerId) {
         throw new IllegalArgumentException("Mixed-player orders are not allowed.");
       }
-      TerritoryState source = territory(state, order.source());
-      TerritoryState target = territory(state, order.target());
+      TerritoryState source = territory(scratch, order.source());
+      TerritoryState target = territory(scratch, order.target());
       if (source.owner() != playerId) {
         throw new IllegalArgumentException("You can only issue orders from territories you control.");
+      }
+      if (source.units() <= 0) {
+        throw new IllegalArgumentException("You cannot issue orders from an empty territory.");
+      }
+      if (order.units() <= 0) {
+        throw new IllegalArgumentException("Order units must be positive.");
+      }
+      if (order.units() > source.units()) {
+        throw new IllegalArgumentException("That territory does not have enough units available.");
+      }
+
+      if (target.owner() != null && target.owner() != playerId) {
+        throw new IllegalArgumentException("Move targets must belong to the issuing player or be unoccupied.");
+      }
+      if (target.owner() == null) {
+        if (!source.definition().neighbors().contains(target.definition().name())) {
+          throw new IllegalArgumentException("Moves into unoccupied territories must be adjacent.");
+        }
+      } else {
+        if (!hasFriendlyPath(playerId, order.source(), order.target(), scratch)) {
+          throw new IllegalArgumentException("Moves need a friendly path between " + order.source() + " and " + order.target() + ".");
+        }
+      }
+
+      source.units(source.units() - order.units());
+      applyOccupancy(source);
+      if (target.owner() == null) {
+        target.owner(playerId);
+      }
+      target.units(target.units() + order.units());
+    }
+
+    Map<String, Integer> committedFromSource = new HashMap<>();
+    for (OrderCommand order : attackOrders) {
+      if (order.playerId() != playerId) {
+        throw new IllegalArgumentException("Mixed-player orders are not allowed.");
+      }
+      TerritoryState source = territory(scratch, order.source());
+      TerritoryState target = territory(scratch, order.target());
+      if (source.owner() != playerId) {
+        throw new IllegalArgumentException("You can only issue orders from territories you control.");
+      }
+      if (source.units() <= 0) {
+        throw new IllegalArgumentException("You cannot issue orders from an empty territory.");
       }
       if (order.units() <= 0) {
         throw new IllegalArgumentException("Order units must be positive.");
       }
 
       int remaining = source.units() - committedFromSource.getOrDefault(order.source(), 0);
-      if (remaining - order.units() < 1) {
-        throw new IllegalArgumentException("Territories must keep at least one unit behind.");
+      if (remaining - order.units() < 0) {
+        throw new IllegalArgumentException("That territory does not have enough units available.");
       }
 
-      if (order.type() == OrderType.MOVE) {
-        if (target.owner() != playerId) {
-          throw new IllegalArgumentException("Move targets must belong to the issuing player.");
-        }
-        if (!hasFriendlyPath(playerId, order.source(), order.target())) {
-          throw new IllegalArgumentException("Moves need a friendly path between " + order.source() + " and " + order.target() + ".");
-        }
-      } else {
-        if (target.owner() == playerId) {
-          throw new IllegalArgumentException("Attack targets must belong to another player.");
-        }
-        if (!source.definition().neighbors().contains(target.definition().name())) {
-          throw new IllegalArgumentException("Attacks must target adjacent territories.");
-        }
+      if (target.owner() == playerId) {
+        throw new IllegalArgumentException("Attack targets must belong to another player or be unoccupied.");
+      }
+      if (!source.definition().neighbors().contains(target.definition().name())) {
+        throw new IllegalArgumentException("Attacks must target adjacent territories.");
       }
       committedFromSource.merge(order.source(), order.units(), Integer::sum);
     }
   }
 
-  private boolean hasFriendlyPath(PlayerId playerId, String source, String target) {
+  private boolean hasFriendlyPath(PlayerId playerId, String source, String target, Map<String, TerritoryState> state) {
     if (Objects.equals(source, target)) {
       return true;
     }
@@ -464,8 +522,8 @@ public final class GameEngine {
     visited.add(source);
     while (!queue.isEmpty()) {
       String current = queue.removeFirst();
-      for (String neighbor : territory(current).definition().neighbors()) {
-        TerritoryState neighborState = territory(neighbor);
+      for (String neighbor : territory(state, current).definition().neighbors()) {
+        TerritoryState neighborState = territory(state, neighbor);
         if (neighborState.owner() != playerId || !visited.add(neighbor)) {
           continue;
         }
@@ -478,37 +536,10 @@ public final class GameEngine {
     return false;
   }
 
-  private boolean isBorderTerritory(TerritoryState territory) {
-    return territory.definition().neighbors().stream().map(this::territory).anyMatch(other -> other.owner() != territory.owner());
-  }
-
-  private Map<String, Integer> availableByTerritory(
-      PlayerId playerId,
-      List<OrderCommand> moveOrders,
-      List<OrderCommand> attackOrders,
-      Map<String, TerritoryState> state) {
-    Map<String, Integer> available = state.values().stream()
-        .filter(territory -> territory.owner() == playerId)
-        .collect(Collectors.toMap(territory -> territory.definition().name(), TerritoryState::units, (a, b) -> a, LinkedHashMap::new));
-    for (OrderCommand move : moveOrders) {
-      if (move.playerId() == playerId) {
-        available.merge(move.source(), -move.units(), Integer::sum);
-        available.merge(move.target(), move.units(), Integer::sum);
-      }
-    }
-    for (OrderCommand attack : attackOrders) {
-      if (attack.playerId() == playerId) {
-        available.merge(attack.source(), -attack.units(), Integer::sum);
-      }
-    }
-    return available;
-  }
-
   private PlayerId findWinner() {
-    for (PlayerId playerId : TURN_PLAYERS) {
-      if (territories.values().stream().allMatch(territory -> territory.owner() == playerId)) {
-        return playerId;
-      }
+    List<PlayerId> alive = players.stream().filter(playerId -> !isDefeated(playerId)).toList();
+    if (alive.size() == 1) {
+      return alive.getFirst();
     }
     return null;
   }
@@ -526,6 +557,14 @@ public final class GameEngine {
   private Map<String, TerritoryState> cloneTerritories() {
     Map<String, TerritoryState> clone = new LinkedHashMap<>();
     for (TerritoryState territory : territories.values()) {
+      clone.put(territory.definition().name(), new TerritoryState(territory.definition(), territory.owner(), territory.units()));
+    }
+    return clone;
+  }
+
+  private Map<String, TerritoryState> cloneTerritories(Map<String, TerritoryState> source) {
+    Map<String, TerritoryState> clone = new LinkedHashMap<>();
+    for (TerritoryState territory : source.values()) {
       clone.put(territory.definition().name(), new TerritoryState(territory.definition(), territory.owner(), territory.units()));
     }
     return clone;
@@ -570,4 +609,3 @@ public final class GameEngine {
       int defenderUnitsRemaining,
       List<String> details) {}
 }
-

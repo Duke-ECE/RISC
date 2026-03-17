@@ -8,6 +8,8 @@ import com.risc.backend.game.PlayerId;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.OrderRequest;
 import com.risc.backend.game.dto.PlacementRequest;
+import com.risc.backend.game.dto.PlayerView;
+import com.risc.backend.game.dto.TerritoryView;
 import com.risc.backend.game.dto.TurnRequest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -26,7 +28,12 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class RoomService {
-  private static final List<PlayerId> JOIN_ORDER = List.of(PlayerId.BLUE, PlayerId.RED);
+  private static final List<PlayerId> PLAYER_ORDER = List.of(
+      PlayerId.GREEN,
+      PlayerId.BLUE,
+      PlayerId.RED,
+      PlayerId.YELLOW,
+      PlayerId.PURPLE);
 
   private final SecureRandom random = new SecureRandom();
   private final Map<String, GameRoom> rooms = new HashMap<>();
@@ -41,47 +48,50 @@ public class RoomService {
     rooms.put(roomId, room);
 
     String token = room.joinAs(PlayerId.GREEN);
-    GameView view = room.view(PlayerId.GREEN, token);
+    GameView view = room.view(PlayerId.GREEN);
     return new RoomJoinResponse(roomId, PlayerId.GREEN.name(), token, view);
   }
 
   public synchronized RoomJoinResponse joinRoom(String roomId) {
     GameRoom room = requireRoom(roomId);
-    for (PlayerId candidate : JOIN_ORDER) {
-      if (!room.humanPlayers.contains(candidate)) {
-        String token = room.joinAs(candidate);
-        GameView view = room.view(candidate, token);
-        return new RoomJoinResponse(roomId, candidate.name(), token, view);
-      }
-    }
-    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room is full (already has 3 human players).");
+    PlayerId playerId = room.nextJoinSeat();
+    String token = room.joinAs(playerId);
+    GameView view = room.view(playerId);
+    return new RoomJoinResponse(roomId, playerId.name(), token, view);
   }
 
   public synchronized GameView viewRoom(String roomId, String token) {
     GameRoom room = requireRoom(roomId);
     PlayerId playerId = room.playerForToken(token);
-    return room.view(playerId, token);
+    return room.view(playerId);
   }
 
   public synchronized GameView resetRoom(String roomId, String token) {
     GameRoom room = requireRoom(roomId);
     PlayerId playerId = room.playerForToken(token);
-    room.reset();
-    return room.view(playerId, token);
+    room.resetGameToLobby();
+    return room.view(playerId);
+  }
+
+  public synchronized GameView startRoom(String roomId, String token) {
+    GameRoom room = requireRoom(roomId);
+    PlayerId playerId = room.playerForToken(token);
+    room.start(playerId);
+    return room.view(playerId);
   }
 
   public synchronized GameView commitSetup(String roomId, String token, PlacementRequest request) {
     GameRoom room = requireRoom(roomId);
     PlayerId playerId = room.playerForToken(token);
     room.commitSetup(playerId, request);
-    return room.view(playerId, token);
+    return room.view(playerId);
   }
 
   public synchronized GameView commitTurn(String roomId, String token, TurnRequest request) {
     GameRoom room = requireRoom(roomId);
     PlayerId playerId = room.playerForToken(token);
     room.commitTurn(playerId, request);
-    return room.view(playerId, token);
+    return room.view(playerId);
   }
 
   private GameRoom requireRoom(String roomId) {
@@ -93,7 +103,6 @@ public class RoomService {
   }
 
   private String generateRoomId() {
-    // Human-friendly: 6 chars base32-ish, uppercase.
     final String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     StringBuilder builder = new StringBuilder(6);
     for (int i = 0; i < 6; i++) {
@@ -104,34 +113,80 @@ public class RoomService {
 
   private static final class GameRoom {
     private final String roomId;
-    private final GameEngine engine = new GameEngine();
     private final Map<String, PlayerId> tokenToPlayer = new HashMap<>();
     private final EnumMap<PlayerId, String> playerToToken = new EnumMap<>(PlayerId.class);
-    private final Set<PlayerId> humanPlayers = EnumSet.noneOf(PlayerId.class);
+    private final List<PlayerId> joinedPlayers = new ArrayList<>();
+
+    private GameEngine engine;
     private final Set<PlayerId> setupCommitted = EnumSet.noneOf(PlayerId.class);
     private final EnumMap<PlayerId, List<OrderCommand>> committedOrders = new EnumMap<>(PlayerId.class);
     private int committedOrdersTurnNumber = 1;
 
     private GameRoom(String roomId) {
       this.roomId = Objects.requireNonNull(roomId, "roomId");
-      reset();
     }
 
-    private void reset() {
-      engine.reset();
-      setupCommitted.clear();
-      committedOrders.clear();
-      committedOrdersTurnNumber = engine.turnNumber();
+    private GameView view(PlayerId viewer) {
+      if (engine == null) {
+        return lobbyView(viewer);
+      }
+      return engine.view(viewer, roomId, waitingOnPlayers(viewer));
+    }
+
+    private GameView lobbyView(PlayerId viewer) {
+      List<PlayerView> players = joinedPlayers.stream()
+          .map(playerId -> new PlayerView(
+              playerId.name(),
+              playerId.displayName(),
+              0,
+              0,
+              false,
+              playerId == viewer,
+              0))
+          .toList();
+      List<String> log = new ArrayList<>();
+      log.add("Lobby: room created. Host (Green) starts the game when ready.");
+      log.add("Players joined: " + joinedPlayers.size() + ". Minimum to start: 2. Maximum: 5.");
+      return new GameView(
+          GamePhase.LOBBY.name(),
+          viewer.name(),
+          null,
+          "Waiting for host to start. Share the room ID with other players.",
+          List.of(),
+          players,
+          log,
+          0,
+          false,
+          roomId,
+          waitingOnPlayers(viewer).stream().map(PlayerId::name).toList());
+    }
+
+    private PlayerId nextJoinSeat() {
+      if (engine != null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; no more joins allowed.");
+      }
+      if (joinedPlayers.size() >= 5) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room is full (already has 5 players).");
+      }
+      for (PlayerId playerId : PLAYER_ORDER) {
+        if (!joinedPlayers.contains(playerId)) {
+          return playerId;
+        }
+      }
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room is full.");
     }
 
     private String joinAs(PlayerId playerId) {
-      if (humanPlayers.contains(playerId)) {
+      if (engine != null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; no more joins allowed.");
+      }
+      if (joinedPlayers.contains(playerId)) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Player already joined: " + playerId.name());
       }
       String token = UUID.randomUUID().toString();
       tokenToPlayer.put(token, playerId);
       playerToToken.put(playerId, token);
-      humanPlayers.add(playerId);
+      joinedPlayers.add(playerId);
       return token;
     }
 
@@ -146,9 +201,33 @@ public class RoomService {
       return playerId;
     }
 
+    private void start(PlayerId requester) {
+      if (engine != null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started.");
+      }
+      if (requester != PlayerId.GREEN) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host (Green) can start the game.");
+      }
+      if (joinedPlayers.size() < 2) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Need at least 2 players to start.");
+      }
+
+      engine = new GameEngine(joinedPlayers);
+      setupCommitted.clear();
+      committedOrders.clear();
+      committedOrdersTurnNumber = engine.turnNumber();
+    }
+
+    private void resetGameToLobby() {
+      engine = null;
+      setupCommitted.clear();
+      committedOrders.clear();
+      committedOrdersTurnNumber = 1;
+    }
+
     private void commitSetup(PlayerId playerId, PlacementRequest request) {
-      if (!humanPlayers.contains(playerId)) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Player is not a human in this room.");
+      if (engine == null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game has not started yet.");
       }
       if (engine.phase() != GamePhase.SETUP) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Setup is already finished.");
@@ -156,14 +235,7 @@ public class RoomService {
       engine.commitPlacement(playerId, request.allocations());
       setupCommitted.add(playerId);
 
-      if (setupCommitted.containsAll(humanPlayers)) {
-        // Fill AI placements for any non-human players.
-        for (PlayerId candidate : PlayerId.values()) {
-          if (humanPlayers.contains(candidate)) {
-            continue;
-          }
-          engine.commitPlacement(candidate, engine.buildAiPlacement(candidate));
-        }
+      if (setupCommitted.containsAll(joinedPlayers)) {
         engine.startOrdersPhase(List.of(
             "Initial placement complete.",
             "All players revealed their armies.",
@@ -174,14 +246,14 @@ public class RoomService {
     }
 
     private void commitTurn(PlayerId playerId, TurnRequest request) {
+      if (engine == null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game has not started yet.");
+      }
       if (engine.phase() != GamePhase.ORDERS) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game is not accepting turn orders right now.");
       }
       if (engine.winner() != null) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The game is already over.");
-      }
-      if (!humanPlayers.contains(playerId)) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Player is not a human in this room.");
       }
       if (engine.isDefeated(playerId)) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Defeated players cannot submit orders.");
@@ -197,7 +269,7 @@ public class RoomService {
       committedOrders.put(playerId, orders);
 
       Set<PlayerId> required = EnumSet.noneOf(PlayerId.class);
-      for (PlayerId candidate : humanPlayers) {
+      for (PlayerId candidate : joinedPlayers) {
         if (!engine.isDefeated(candidate)) {
           required.add(candidate);
         }
@@ -207,30 +279,22 @@ public class RoomService {
         for (List<OrderCommand> human : committedOrders.values()) {
           allOrders.addAll(human);
         }
-        for (PlayerId candidate : PlayerId.values()) {
-          if (humanPlayers.contains(candidate)) {
-            continue;
-          }
-          allOrders.addAll(engine.buildAiOrders(candidate));
-        }
         engine.resolveCommittedTurn(allOrders);
         committedOrders.clear();
         committedOrdersTurnNumber = engine.turnNumber();
       }
     }
 
-    private GameView view(PlayerId viewer, String token) {
-      List<PlayerId> waiting = waitingOnPlayers(viewer);
-      return engine.view(viewer, roomId, waiting);
-    }
-
     private List<PlayerId> waitingOnPlayers(PlayerId viewer) {
+      if (engine == null) {
+        return List.of();
+      }
       if (engine.winner() != null) {
         return List.of();
       }
       if (engine.phase() == GamePhase.SETUP) {
         List<PlayerId> waiting = new ArrayList<>();
-        for (PlayerId candidate : humanPlayers) {
+        for (PlayerId candidate : joinedPlayers) {
           if (!setupCommitted.contains(candidate)) {
             waiting.add(candidate);
           }
@@ -242,7 +306,7 @@ public class RoomService {
           return List.of();
         }
         List<PlayerId> waiting = new ArrayList<>();
-        for (PlayerId candidate : humanPlayers) {
+        for (PlayerId candidate : joinedPlayers) {
           if (engine.isDefeated(candidate)) {
             continue;
           }
@@ -267,4 +331,3 @@ public class RoomService {
     }
   }
 }
-

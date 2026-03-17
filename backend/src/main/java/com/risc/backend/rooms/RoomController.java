@@ -55,6 +55,14 @@ public class RoomController {
     return roomService.resetRoom(roomId, resolveToken(tokenHeader, tokenQuery));
   }
 
+  @PostMapping("/{roomId}/start")
+  public GameView startRoom(
+      @PathVariable String roomId,
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.startRoom(roomId, resolveToken(tokenHeader, tokenQuery));
+  }
+
   @PostMapping("/{roomId}/setup")
   public GameView setup(
       @PathVariable String roomId,
@@ -77,6 +85,11 @@ public class RoomController {
   public ResponseEntity<Map<String, String>> handleRoomErrors(ResponseStatusException ex) {
     String message = ex.getReason() == null ? "Request failed" : ex.getReason();
     return ResponseEntity.status(ex.getStatusCode()).body(Map.of("error", message));
+  }
+
+  @ExceptionHandler(IllegalArgumentException.class)
+  public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", ex.getMessage()));
   }
 
   private String resolveToken(String tokenHeader, String tokenQuery) {
