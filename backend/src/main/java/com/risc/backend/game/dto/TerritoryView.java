@@ -9,5 +9,5 @@ public record TerritoryView(
     int x,
     int y,
     List<String> neighbors,
-    boolean hidden) {}
-
+    boolean hidden,
+    List<VertexView> polygon) {}

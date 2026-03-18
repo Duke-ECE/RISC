@@ -21,7 +21,7 @@ class GameServiceTest {
     service.applyPlacement(new PlacementRequest(Map.of(
         "Narnia", 3,
         "Midkemia", 3,
-        "Oz", 3)));
+        "Oz", 3), List.of()));
 
     GameView view = service.playTurn(new TurnRequest(List.of(
         new OrderRequest("MOVE", "Narnia", "Oz", 1))));
@@ -42,7 +42,7 @@ class GameServiceTest {
     service.applyPlacement(new PlacementRequest(Map.of(
         "Narnia", 3,
         "Midkemia", 3,
-        "Oz", 3)));
+        "Oz", 3), List.of()));
 
     GameView before = service.currentView();
     int narniaBefore = unitsFor(before, "Narnia");
@@ -64,7 +64,7 @@ class GameServiceTest {
     service.applyPlacement(new PlacementRequest(Map.of(
         "Narnia", 0,
         "Midkemia", 0,
-        "Oz", 9)));
+        "Oz", 9), List.of()));
 
     GameView view = service.playTurn(new TurnRequest(List.of(
         new OrderRequest("ATTACK", "Oz", "Gondor", 3))));

@@ -7,5 +7,5 @@ public record TerritoryDefinition(
     int x,
     int y,
     PlayerId initialOwner,
-    List<String> neighbors) {}
-
+    List<String> neighbors,
+    List<MapVertex> polygon) {}
