@@ -35,8 +35,8 @@ public class GameService {
         List.of("Single-player mode is disabled. Create a room to play multiplayer."),
         0,
         false,
+        0,
         null,
         List.of());
   }
 }
-

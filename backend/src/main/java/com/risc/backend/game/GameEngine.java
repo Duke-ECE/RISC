@@ -3,6 +3,7 @@ package com.risc.backend.game;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.PlayerView;
 import com.risc.backend.game.dto.TerritoryView;
+import com.risc.backend.game.dto.VertexView;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
@@ -88,15 +89,45 @@ public final class GameEngine {
         "All other players remain hidden until everyone locks in setup."));
   }
 
-  public synchronized void commitPlacement(PlayerId playerId, Map<String, Integer> requestedAllocations) {
+  public synchronized void commitPlacement(PlayerId playerId, Map<String, Integer> requestedAllocations, List<String> abandon) {
     ensurePhase(GamePhase.SETUP, "Setup is already finished.");
     requirePlayer(playerId);
     Map<String, Integer> allocations = sanitizeAllocations(requestedAllocations, playerId);
+    List<String> abandonList = abandon == null ? List.of() : abandon;
+    if (!abandonList.isEmpty()) {
+      Set<String> owned = ownedTerritories(playerId).stream().map(t -> t.definition().name()).collect(Collectors.toSet());
+      Set<String> unique = new HashSet<>();
+      for (String territoryName : abandonList) {
+        if (territoryName == null || territoryName.isBlank()) {
+          throw new IllegalArgumentException("Abandoned territory name cannot be blank.");
+        }
+        if (!owned.contains(territoryName)) {
+          throw new IllegalArgumentException("You can only abandon your own starting territories.");
+        }
+        if (!unique.add(territoryName)) {
+          throw new IllegalArgumentException("Duplicate abandoned territory: " + territoryName);
+        }
+        if (allocations.getOrDefault(territoryName, 0) != 0) {
+          throw new IllegalArgumentException("Abandoned territories must have 0 allocated reserve units.");
+        }
+      }
+      if (unique.size() >= owned.size()) {
+        throw new IllegalArgumentException("You must keep at least one starting territory.");
+      }
+    }
     int total = allocations.values().stream().mapToInt(Integer::intValue).sum();
     if (total != reserveUnits.getOrDefault(playerId, 0)) {
       throw new IllegalArgumentException("You must place exactly " + reserveUnits.getOrDefault(playerId, 0) + " reserve units.");
     }
     applyReserve(playerId, allocations);
+    for (String territoryName : abandonList) {
+      TerritoryState territory = territories.get(territoryName);
+      if (territory == null) {
+        continue;
+      }
+      territory.units(0);
+      applyOccupancy(territory);
+    }
   }
 
   public synchronized void startOrdersPhase(List<String> logLines) {
@@ -135,7 +166,10 @@ public final class GameEngine {
             territory.definition().x(),
             territory.definition().y(),
             territory.definition().neighbors(),
-            phase == GamePhase.SETUP && territory.owner() != viewer))
+            phase == GamePhase.SETUP && territory.owner() != viewer,
+            territory.definition().polygon().stream()
+                .map(vertex -> new VertexView(vertex.x(), vertex.y()))
+                .toList()))
         .toList();
 
     List<PlayerView> playerViews = players.stream()
@@ -163,6 +197,7 @@ public final class GameEngine {
         List.copyOf(lastLog),
         turnNumber,
         phase == GamePhase.ORDERS,
+        players.size(),
         roomId,
         waiting);
   }

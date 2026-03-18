@@ -63,6 +63,22 @@ public class RoomController {
     return roomService.startRoom(roomId, resolveToken(tokenHeader, tokenQuery));
   }
 
+  @PostMapping("/{roomId}/seats/add")
+  public GameView addSeat(
+      @PathVariable String roomId,
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.addSeat(roomId, resolveToken(tokenHeader, tokenQuery));
+  }
+
+  @PostMapping("/{roomId}/seats/remove")
+  public GameView removeSeat(
+      @PathVariable String roomId,
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.removeSeat(roomId, resolveToken(tokenHeader, tokenQuery));
+  }
+
   @PostMapping("/{roomId}/setup")
   public GameView setup(
       @PathVariable String roomId,

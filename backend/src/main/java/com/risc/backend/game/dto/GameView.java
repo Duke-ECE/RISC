@@ -12,5 +12,6 @@ public record GameView(
     List<String> lastLog,
     int turnNumber,
     boolean readyForOrders,
+    int seatCount,
     String roomId,
     List<String> waitingOnPlayers) {}

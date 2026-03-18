@@ -80,6 +80,20 @@ public class RoomService {
     return room.view(playerId);
   }
 
+  public synchronized GameView addSeat(String roomId, String token) {
+    GameRoom room = requireRoom(roomId);
+    PlayerId playerId = room.playerForToken(token);
+    room.addSeat(playerId);
+    return room.view(playerId);
+  }
+
+  public synchronized GameView removeSeat(String roomId, String token) {
+    GameRoom room = requireRoom(roomId);
+    PlayerId playerId = room.playerForToken(token);
+    room.removeLastEmptySeat(playerId);
+    return room.view(playerId);
+  }
+
   public synchronized GameView commitSetup(String roomId, String token, PlacementRequest request) {
     GameRoom room = requireRoom(roomId);
     PlayerId playerId = room.playerForToken(token);
@@ -116,6 +130,7 @@ public class RoomService {
     private final Map<String, PlayerId> tokenToPlayer = new HashMap<>();
     private final EnumMap<PlayerId, String> playerToToken = new EnumMap<>(PlayerId.class);
     private final List<PlayerId> joinedPlayers = new ArrayList<>();
+    private int seatCount = 2;
 
     private GameEngine engine;
     private final Set<PlayerId> setupCommitted = EnumSet.noneOf(PlayerId.class);
@@ -146,7 +161,8 @@ public class RoomService {
           .toList();
       List<String> log = new ArrayList<>();
       log.add("Lobby: room created. Host (Green) starts the game when ready.");
-      log.add("Players joined: " + joinedPlayers.size() + ". Minimum to start: 2. Maximum: 5.");
+      log.add("Seats: " + seatCount + "/5. Players joined: " + joinedPlayers.size() + ".");
+      log.add("Host can start when there are no empty seats (and at least 2 players).");
       return new GameView(
           GamePhase.LOBBY.name(),
           viewer.name(),
@@ -157,6 +173,7 @@ public class RoomService {
           log,
           0,
           false,
+          seatCount,
           roomId,
           waitingOnPlayers(viewer).stream().map(PlayerId::name).toList());
     }
@@ -165,15 +182,15 @@ public class RoomService {
       if (engine != null) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; no more joins allowed.");
       }
-      if (joinedPlayers.size() >= 5) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room is full (already has 5 players).");
+      if (joinedPlayers.size() >= seatCount) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No open seats. Ask the host to add a new seat first.");
       }
-      for (PlayerId playerId : PLAYER_ORDER) {
+      for (PlayerId playerId : PLAYER_ORDER.subList(0, seatCount)) {
         if (!joinedPlayers.contains(playerId)) {
           return playerId;
         }
       }
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room is full.");
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No open seats.");
     }
 
     private String joinAs(PlayerId playerId) {
@@ -188,6 +205,35 @@ public class RoomService {
       playerToToken.put(playerId, token);
       joinedPlayers.add(playerId);
       return token;
+    }
+
+    private void addSeat(PlayerId requester) {
+      if (engine != null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; cannot add seats.");
+      }
+      if (requester != PlayerId.GREEN) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host (Green) can add seats.");
+      }
+      if (seatCount >= 5) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Already at the maximum (5 seats).");
+      }
+      seatCount += 1;
+    }
+
+    private void removeLastEmptySeat(PlayerId requester) {
+      if (engine != null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot remove seats after game start.");
+      }
+      if (requester != PlayerId.GREEN) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host (Green) can remove seats.");
+      }
+      if (seatCount <= 2) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot have fewer than 2 seats.");
+      }
+      if (joinedPlayers.size() >= seatCount) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No empty seats to remove.");
+      }
+      seatCount -= 1;
     }
 
     private PlayerId playerForToken(String token) {
@@ -211,6 +257,9 @@ public class RoomService {
       if (joinedPlayers.size() < 2) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Need at least 2 players to start.");
       }
+      if (joinedPlayers.size() != seatCount) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot start while there are empty seats. Remove extra seats or wait for players to join.");
+      }
 
       engine = new GameEngine(joinedPlayers);
       setupCommitted.clear();
@@ -232,7 +281,7 @@ public class RoomService {
       if (engine.phase() != GamePhase.SETUP) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Setup is already finished.");
       }
-      engine.commitPlacement(playerId, request.allocations());
+      engine.commitPlacement(playerId, request.allocations(), request.abandonSafe());
       setupCommitted.add(playerId);
 
       if (setupCommitted.containsAll(joinedPlayers)) {
