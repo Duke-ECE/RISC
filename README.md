@@ -30,6 +30,7 @@ make backend-dev
 make frontend-dev
 make dev-up
 make backend-stop
+cd frontend && npm run terminal
 ```
 
 ## Notes

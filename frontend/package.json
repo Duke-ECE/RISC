@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "terminal": "node terminal_client.mjs"
   },
   "devDependencies": {
     "playwright": "^1.58.2",
