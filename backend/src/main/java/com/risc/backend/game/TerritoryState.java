@@ -1,14 +1,21 @@
 package com.risc.backend.game;
 
+import java.util.EnumMap;
+import java.util.Map;
+
 public class TerritoryState {
   private final TerritoryDefinition definition;
+  private final EnumMap<UnitLevel, Integer> unitCounts;
   private PlayerId owner;
-  private int units;
 
   public TerritoryState(TerritoryDefinition definition, PlayerId owner, int units) {
     this.definition = definition;
     this.owner = owner;
-    this.units = units;
+    this.unitCounts = new EnumMap<>(UnitLevel.class);
+    for (UnitLevel level : UnitLevel.values()) {
+      unitCounts.put(level, 0);
+    }
+    this.unitCounts.put(UnitLevel.BASIC, Math.max(0, units));
   }
 
   public TerritoryDefinition definition() {
@@ -24,10 +31,17 @@ public class TerritoryState {
   }
 
   public int units() {
-    return units;
+    return unitCounts.values().stream().mapToInt(Integer::intValue).sum();
   }
 
   public void units(int units) {
-    this.units = units;
+    for (UnitLevel level : UnitLevel.values()) {
+      unitCounts.put(level, 0);
+    }
+    unitCounts.put(UnitLevel.BASIC, Math.max(0, units));
+  }
+
+  public Map<UnitLevel, Integer> unitCounts() {
+    return Map.copyOf(unitCounts);
   }
 }

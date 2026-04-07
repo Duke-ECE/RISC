@@ -5,11 +5,11 @@ import com.risc.backend.game.GamePhase;
 import com.risc.backend.game.OrderCommand;
 import com.risc.backend.game.OrderType;
 import com.risc.backend.game.PlayerId;
+import com.risc.backend.game.ResourceType;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.OrderRequest;
 import com.risc.backend.game.dto.PlacementRequest;
 import com.risc.backend.game.dto.PlayerView;
-import com.risc.backend.game.dto.TerritoryView;
 import com.risc.backend.game.dto.TurnRequest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -157,7 +157,11 @@ public class RoomService {
               0,
               false,
               playerId == viewer,
-              0))
+              0,
+              1,
+              Map.of(
+                  ResourceType.FOOD.name(), 0,
+                  ResourceType.TECHNOLOGY.name(), 0)))
           .toList();
       List<String> log = new ArrayList<>();
       log.add("Lobby: room created. Host (Green) starts the game when ready.");

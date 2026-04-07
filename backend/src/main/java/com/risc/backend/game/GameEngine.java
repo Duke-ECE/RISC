@@ -31,6 +31,8 @@ public final class GameEngine {
 
   private final Map<String, TerritoryState> territories = new LinkedHashMap<>();
   private final EnumMap<PlayerId, Integer> reserveUnits = new EnumMap<>(PlayerId.class);
+  private final EnumMap<PlayerId, EnumMap<ResourceType, Integer>> resourceTotals = new EnumMap<>(PlayerId.class);
+  private final EnumMap<PlayerId, Integer> maxTechnologyLevel = new EnumMap<>(PlayerId.class);
 
   private List<String> lastLog = new ArrayList<>();
   private GamePhase phase = GamePhase.SETUP;
@@ -74,11 +76,18 @@ public final class GameEngine {
   public synchronized void reset() {
     territories.clear();
     reserveUnits.clear();
+    resourceTotals.clear();
+    maxTechnologyLevel.clear();
     for (TerritoryDefinition definition : map) {
       territories.put(definition.name(), new TerritoryState(definition, definition.initialOwner(), STARTING_UNITS_PER_TERRITORY));
     }
     for (PlayerId playerId : players) {
       reserveUnits.put(playerId, RESERVE_UNITS);
+      EnumMap<ResourceType, Integer> resources = new EnumMap<>(ResourceType.class);
+      resources.put(ResourceType.FOOD, 0);
+      resources.put(ResourceType.TECHNOLOGY, 0);
+      resourceTotals.put(playerId, resources);
+      maxTechnologyLevel.put(playerId, 1);
     }
     phase = GamePhase.SETUP;
     winner = null;
@@ -165,6 +174,9 @@ public final class GameEngine {
             phase == GamePhase.SETUP && territory.owner() != viewer ? 0 : territory.units(),
             territory.definition().x(),
             territory.definition().y(),
+            territory.definition().size(),
+            stringifyResourceMap(territory.definition().resourceProduction()),
+            stringifyUnitMap(territory.unitCounts(), phase == GamePhase.SETUP && territory.owner() != viewer),
             territory.definition().neighbors(),
             phase == GamePhase.SETUP && territory.owner() != viewer,
             territory.definition().polygon().stream()
@@ -180,7 +192,9 @@ public final class GameEngine {
             territories.values().stream().filter(territory -> territory.owner() == playerId).mapToInt(TerritoryState::units).sum(),
             isDefeated(playerId),
             playerId == viewer,
-            reserveUnits.getOrDefault(playerId, 0)))
+            reserveUnits.getOrDefault(playerId, 0),
+            maxTechnologyLevel.getOrDefault(playerId, 1),
+            stringifyResourceMap(resourceTotals.get(playerId))))
         .toList();
 
     List<String> waiting = waitingOnPlayers == null
@@ -465,6 +479,25 @@ public final class GameEngine {
         log.add(playerId.displayName() + " has no territories left and is defeated.");
       }
     }
+  }
+
+  private Map<String, Integer> stringifyResourceMap(Map<ResourceType, Integer> resources) {
+    Map<String, Integer> result = new LinkedHashMap<>();
+    if (resources == null) {
+      return result;
+    }
+    for (ResourceType type : ResourceType.values()) {
+      result.put(type.name(), resources.getOrDefault(type, 0));
+    }
+    return result;
+  }
+
+  private Map<String, Integer> stringifyUnitMap(Map<UnitLevel, Integer> units, boolean hidden) {
+    Map<String, Integer> result = new LinkedHashMap<>();
+    for (UnitLevel level : UnitLevel.values()) {
+      result.put(level.name(), hidden ? 0 : units.getOrDefault(level, 0));
+    }
+    return result;
   }
 
   private void validateOrders(PlayerId playerId, List<OrderCommand> orders, Map<String, TerritoryState> state) {
