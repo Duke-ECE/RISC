@@ -78,20 +78,19 @@ class GameEngineModelTest {
   }
 
   @Test
-  void newlyCapturedTerritoryCountsTowardSameTurnResourceIncome() {
-    GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE), captureMap(), new Random(1));
+  void newlyGainedTerritoryCountsTowardSameTurnResourceIncome() {
+    GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE), newlyGainedMap(), new Random(1));
     engine.startOrdersPhase(List.of("Orders phase"));
+    engine.resolveCommittedTurn(List.of());
 
-    engine.resolveCommittedTurn(List.of(
-        new OrderCommand(OrderType.ATTACK, "G1", "B1", 1, PlayerId.GREEN),
-        new OrderCommand(OrderType.ATTACK, "B1", "G2", 1, PlayerId.BLUE)));
+    engine.resolveCommittedTurn(List.of(new OrderCommand(OrderType.MOVE, "G1", "U1", 1, PlayerId.GREEN)));
 
     GameView view = engine.view(PlayerId.GREEN, "ROOM1", List.of());
     PlayerView green = findPlayer(view, PlayerId.GREEN);
-    TerritoryView captured = view.territories().stream().filter(t -> t.name().equals("B1")).findFirst().orElseThrow();
+    TerritoryView gained = view.territories().stream().filter(t -> t.name().equals("U1")).findFirst().orElseThrow();
 
-    assertEquals(PlayerId.GREEN.name(), captured.owner());
-    assertEquals(3, green.resources().get(ResourceType.FOOD.name()));
+    assertEquals(PlayerId.GREEN.name(), gained.owner());
+    assertEquals(10, green.resources().get(ResourceType.FOOD.name()));
     assertEquals(1, green.resources().get(ResourceType.TECHNOLOGY.name()));
   }
 
@@ -107,12 +106,13 @@ class GameEngineModelTest {
         territory("B2", PlayerId.BLUE, 1, 0, 1, List.of("B1")));
   }
 
-  private List<TerritoryDefinition> captureMap() {
+  private List<TerritoryDefinition> newlyGainedMap() {
     return List.of(
-        territory("G1", PlayerId.GREEN, 1, 4, 0, List.of("B1")),
-        territory("G2", PlayerId.GREEN, 2, 1, 0, List.of("B1")),
-        territory("B1", PlayerId.BLUE, 3, 2, 1, List.of("G1", "G2")),
-        territory("B2", PlayerId.BLUE, 1, 0, 2, List.of()));
+        territory("G1", PlayerId.GREEN, 1, 4, 0, List.of("U1")),
+        territory("G2", PlayerId.GREEN, 2, 1, 0, List.of()),
+        territory("U1", null, 2, 2, 1, List.of("G1")),
+        territory("B1", PlayerId.BLUE, 1, 0, 0, List.of("B2")),
+        territory("B2", PlayerId.BLUE, 1, 0, 2, List.of("B1")));
   }
 
   private TerritoryDefinition territory(

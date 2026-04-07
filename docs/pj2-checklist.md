@@ -53,12 +53,12 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 1: Backend model for PJ2
 
-- [ ] 为 territory 增加 `size`
-- [ ] 为 territory 增加 resource production 定义
-- [ ] 为 player 增加 resource totals
-- [ ] 为 player 增加 `maxTechnologyLevel`
-- [ ] 为单位系统引入 level/type 表达
-- [ ] 更新 DTO，使前端能拿到 `size`、resource、unit breakdown
+- [x] 为 territory 增加 `size`
+- [x] 为 territory 增加 resource production 定义
+- [x] 为 player 增加 resource totals
+- [x] 为 player 增加 `maxTechnologyLevel`
+- [x] 为单位系统引入 level/type 表达
+- [x] 更新 DTO，使前端能拿到 `size`、resource、unit breakdown
 
 测试要求：
 
@@ -72,10 +72,10 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 2: Resource economy
 
-- [ ] 回合结束时按占领领地增加资源
-- [ ] 定义 `food` 与 `technology` 两种资源
-- [ ] 初始化时保证不同玩家起始领地组资源总产出相等
-- [ ] 初始化时保证不同玩家起始领地组总 `size` 相等
+- [x] 回合结束时按占领领地增加资源
+- [x] 定义 `food` 与 `technology` 两种资源
+- [x] 初始化时保证不同玩家起始领地组资源总产出相等
+- [x] 初始化时保证不同玩家起始领地组总 `size` 相等
 
 测试要求：
 
@@ -89,11 +89,11 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 3: Move and attack cost
 
-- [ ] move 消耗 `food = path total size * units`
-- [ ] move 成本按最小合法路径计算
-- [ ] attack 消耗 `1 food / unit`
-- [ ] server 校验资源是否足够
-- [ ] turn log 增加资源消耗明细
+- [x] move 消耗 `food = path total size * units`
+- [x] move 成本按最小合法路径计算
+- [x] attack 消耗 `1 food / unit`
+- [x] server 校验资源是否足够
+- [x] turn log 增加资源消耗明细
 
 测试要求：
 
@@ -226,8 +226,8 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ## Immediate Next Task
 
-下一步建议先做 `Phase 1: Backend model for PJ2`，原因：
+下一步建议做 `Phase 4: Upgrade orders and tech progression`，原因：
 
-- 这是后续 resource、upgrade、combat v2 的前置条件
-- 可以先写后端测试，降低后续返工
-- 对前端影响可控，先扩 DTO 再逐步接 UI
+- `food` 成本已经接进回合规则，接下来应该把 `technology` 资源也真正用起来
+- 单位升级和科技升级会直接影响 `Phase 5` 的 combat v2
+- 继续保持后端先行，可以先把规则和测试做稳，再接前端交互

@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -252,6 +253,7 @@ public final class GameEngine {
     log.add("Turn " + turnNumber + " begins.");
     appendOrderSection(log, "Committed move orders", moveOrders);
     appendOrderSection(log, "Committed attack orders", attackOrders);
+    log.addAll(applyOrderCosts(allOrders));
 
     // Move phase: apply departures first, then resolve arrivals. If multiple players arrive at the same territory,
     // resolve combat like attacks.
@@ -530,12 +532,63 @@ public final class GameEngine {
   }
 
   private void validateOrders(PlayerId playerId, List<OrderCommand> orders, Map<String, TerritoryState> state) {
-    // New rule: moves are applied immediately (sequentially) during planning; attacks are queued and resolved together.
-    // To validate "final total change", we simulate the submitted move sequence first, then validate attack reservations.
-    Map<String, TerritoryState> scratch = cloneTerritories(state);
+    priceOrders(playerId, orders, state);
+  }
 
+  private boolean hasFriendlyPath(PlayerId playerId, String source, String target, Map<String, TerritoryState> state) {
+    if (Objects.equals(source, target)) {
+      return true;
+    }
+    Set<String> visited = new HashSet<>();
+    ArrayDeque<String> queue = new ArrayDeque<>();
+    queue.add(source);
+    visited.add(source);
+    while (!queue.isEmpty()) {
+      String current = queue.removeFirst();
+      for (String neighbor : territory(state, current).definition().neighbors()) {
+        TerritoryState neighborState = territory(state, neighbor);
+        if (neighborState.owner() != playerId || !visited.add(neighbor)) {
+          continue;
+        }
+        if (neighbor.equals(target)) {
+          return true;
+        }
+        queue.addLast(neighbor);
+      }
+    }
+    return false;
+  }
+
+  private List<String> applyOrderCosts(List<OrderCommand> allOrders) {
+    List<String> log = new ArrayList<>();
+    Map<PlayerId, List<OrderCommand>> byPlayer = allOrders.stream().collect(Collectors.groupingBy(
+        OrderCommand::playerId,
+        LinkedHashMap::new,
+        Collectors.toList()));
+    for (PlayerId playerId : players) {
+      List<OrderCommand> playerOrders = byPlayer.getOrDefault(playerId, List.of());
+      if (playerOrders.isEmpty()) {
+        continue;
+      }
+      OrderCostSummary summary = priceOrders(playerId, playerOrders, territories);
+      EnumMap<ResourceType, Integer> totals = resourceTotals.get(playerId);
+      int beforeFood = totals.getOrDefault(ResourceType.FOOD, 0);
+      int afterFood = beforeFood - summary.foodSpent();
+      totals.put(ResourceType.FOOD, afterFood);
+      log.add("Resource spend: " + playerId.displayName() + " spends " + summary.foodSpent()
+          + " FOOD on orders (" + beforeFood + " -> " + afterFood + ").");
+      log.addAll(summary.details());
+    }
+    return log;
+  }
+
+  private OrderCostSummary priceOrders(PlayerId playerId, List<OrderCommand> orders, Map<String, TerritoryState> state) {
+    Map<String, TerritoryState> scratch = cloneTerritories(state);
     List<OrderCommand> moveOrders = orders.stream().filter(order -> order.type() == OrderType.MOVE).toList();
     List<OrderCommand> attackOrders = orders.stream().filter(order -> order.type() == OrderType.ATTACK).toList();
+    List<String> details = new ArrayList<>();
+    int availableFood = resourceTotals.getOrDefault(playerId, new EnumMap<>(ResourceType.class)).getOrDefault(ResourceType.FOOD, 0);
+    int spentFood = 0;
 
     for (OrderCommand order : moveOrders) {
       if (order.playerId() != playerId) {
@@ -556,18 +609,15 @@ public final class GameEngine {
         throw new IllegalArgumentException("That territory does not have enough units available.");
       }
 
-      if (target.owner() != null && target.owner() != playerId) {
-        throw new IllegalArgumentException("Move targets must belong to the issuing player or be unoccupied.");
+      int pathSize = resolveMovePathSize(playerId, source, target, scratch);
+      int orderFoodCost = pathSize * order.units();
+      if (spentFood + orderFoodCost > availableFood) {
+        throw new IllegalArgumentException("Not enough FOOD for move order from " + order.source() + " to "
+            + order.target() + ". Need " + orderFoodCost + ", have " + (availableFood - spentFood) + ".");
       }
-      if (target.owner() == null) {
-        if (!source.definition().neighbors().contains(target.definition().name())) {
-          throw new IllegalArgumentException("Moves into unoccupied territories must be adjacent.");
-        }
-      } else {
-        if (!hasFriendlyPath(playerId, order.source(), order.target(), scratch)) {
-          throw new IllegalArgumentException("Moves need a friendly path between " + order.source() + " and " + order.target() + ".");
-        }
-      }
+      spentFood += orderFoodCost;
+      details.add(" - " + playerId.displayName() + " MOVE " + order.units() + " from " + order.source() + " to "
+          + order.target() + " costs " + orderFoodCost + " FOOD (path size " + pathSize + ").");
 
       source.units(source.units() - order.units());
       applyOccupancy(source);
@@ -605,32 +655,72 @@ public final class GameEngine {
       if (!source.definition().neighbors().contains(target.definition().name())) {
         throw new IllegalArgumentException("Attacks must target adjacent territories.");
       }
+
+      int orderFoodCost = order.units();
+      if (spentFood + orderFoodCost > availableFood) {
+        throw new IllegalArgumentException("Not enough FOOD for attack order from " + order.source() + " to "
+            + order.target() + ". Need " + orderFoodCost + ", have " + (availableFood - spentFood) + ".");
+      }
+      spentFood += orderFoodCost;
+      details.add(" - " + playerId.displayName() + " ATTACK " + order.units() + " from " + order.source() + " to "
+          + order.target() + " costs " + orderFoodCost + " FOOD.");
       committedFromSource.merge(order.source(), order.units(), Integer::sum);
     }
+
+    return new OrderCostSummary(spentFood, details);
   }
 
-  private boolean hasFriendlyPath(PlayerId playerId, String source, String target, Map<String, TerritoryState> state) {
-    if (Objects.equals(source, target)) {
-      return true;
+  private int resolveMovePathSize(PlayerId playerId, TerritoryState source, TerritoryState target, Map<String, TerritoryState> state) {
+    if (target.owner() != null && target.owner() != playerId) {
+      throw new IllegalArgumentException("Move targets must belong to the issuing player or be unoccupied.");
     }
-    Set<String> visited = new HashSet<>();
-    ArrayDeque<String> queue = new ArrayDeque<>();
-    queue.add(source);
-    visited.add(source);
+    if (target.owner() == null) {
+      if (!source.definition().neighbors().contains(target.definition().name())) {
+        throw new IllegalArgumentException("Moves into unoccupied territories must be adjacent.");
+      }
+      return target.definition().size();
+    }
+    Integer shortest = shortestFriendlyPathSize(playerId, source.definition().name(), target.definition().name(), state);
+    if (shortest == null) {
+      throw new IllegalArgumentException("Moves need a friendly path between " + source.definition().name() + " and "
+          + target.definition().name() + ".");
+    }
+    return shortest;
+  }
+
+  private Integer shortestFriendlyPathSize(PlayerId playerId, String source, String target, Map<String, TerritoryState> state) {
+    if (Objects.equals(source, target)) {
+      return 0;
+    }
+    record Node(String territory, int cost) {}
+    PriorityQueue<Node> queue = new PriorityQueue<>(java.util.Comparator.comparingInt(Node::cost));
+    Map<String, Integer> best = new HashMap<>();
+    queue.add(new Node(source, 0));
+    best.put(source, 0);
+
     while (!queue.isEmpty()) {
-      String current = queue.removeFirst();
-      for (String neighbor : territory(state, current).definition().neighbors()) {
+      Node current = queue.poll();
+      if (current.cost() > best.getOrDefault(current.territory(), Integer.MAX_VALUE)) {
+        continue;
+      }
+      TerritoryState currentTerritory = territory(state, current.territory());
+      for (String neighbor : currentTerritory.definition().neighbors()) {
         TerritoryState neighborState = territory(state, neighbor);
-        if (neighborState.owner() != playerId || !visited.add(neighbor)) {
+        if (neighborState.owner() != playerId) {
+          continue;
+        }
+        int nextCost = current.cost() + neighborState.definition().size();
+        if (nextCost >= best.getOrDefault(neighbor, Integer.MAX_VALUE)) {
           continue;
         }
         if (neighbor.equals(target)) {
-          return true;
+          return nextCost;
         }
-        queue.addLast(neighbor);
+        best.put(neighbor, nextCost);
+        queue.add(new Node(neighbor, nextCost));
       }
     }
-    return false;
+    return null;
   }
 
   private PlayerId findWinner() {
@@ -699,6 +789,8 @@ public final class GameEngine {
       return playerId.displayName() + " from " + String.join(", ", sources) + " with " + totalUnits + " units";
     }
   }
+
+  private record OrderCostSummary(int foodSpent, List<String> details) {}
 
   private record CombatResult(
       boolean attackerWon,
