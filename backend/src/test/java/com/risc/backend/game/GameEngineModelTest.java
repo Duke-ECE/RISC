@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.PlayerView;
 import com.risc.backend.game.dto.TerritoryView;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -57,6 +58,74 @@ class GameEngineModelTest {
     assertEquals(1, sizeTotals.values().stream().distinct().count());
     assertEquals(1, foodTotals.values().stream().distinct().count());
     assertEquals(1, techTotals.values().stream().distinct().count());
+  }
+
+  @Test
+  void endOfTurnAddsResourceIncomeFromOwnedTerritories() {
+    GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE), smallMap(), new Random(0));
+    engine.startOrdersPhase(List.of("Orders phase"));
+
+    engine.resolveCommittedTurn(List.of());
+
+    GameView view = engine.view(PlayerId.GREEN, "ROOM1", List.of());
+    PlayerView green = findPlayer(view, PlayerId.GREEN);
+    PlayerView blue = findPlayer(view, PlayerId.BLUE);
+
+    assertEquals(5, green.resources().get(ResourceType.FOOD.name()));
+    assertEquals(1, green.resources().get(ResourceType.TECHNOLOGY.name()));
+    assertEquals(1, blue.resources().get(ResourceType.FOOD.name()));
+    assertEquals(3, blue.resources().get(ResourceType.TECHNOLOGY.name()));
+  }
+
+  @Test
+  void newlyCapturedTerritoryCountsTowardSameTurnResourceIncome() {
+    GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE), captureMap(), new Random(1));
+    engine.startOrdersPhase(List.of("Orders phase"));
+
+    engine.resolveCommittedTurn(List.of(
+        new OrderCommand(OrderType.ATTACK, "G1", "B1", 1, PlayerId.GREEN),
+        new OrderCommand(OrderType.ATTACK, "B1", "G2", 1, PlayerId.BLUE)));
+
+    GameView view = engine.view(PlayerId.GREEN, "ROOM1", List.of());
+    PlayerView green = findPlayer(view, PlayerId.GREEN);
+    TerritoryView captured = view.territories().stream().filter(t -> t.name().equals("B1")).findFirst().orElseThrow();
+
+    assertEquals(PlayerId.GREEN.name(), captured.owner());
+    assertEquals(3, green.resources().get(ResourceType.FOOD.name()));
+    assertEquals(1, green.resources().get(ResourceType.TECHNOLOGY.name()));
+  }
+
+  private PlayerView findPlayer(GameView view, PlayerId playerId) {
+    return view.players().stream().filter(player -> player.id().equals(playerId.name())).findFirst().orElseThrow();
+  }
+
+  private List<TerritoryDefinition> smallMap() {
+    return List.of(
+        territory("G1", PlayerId.GREEN, 1, 3, 0, List.of("G2")),
+        territory("G2", PlayerId.GREEN, 2, 2, 1, List.of("G1", "B1")),
+        territory("B1", PlayerId.BLUE, 3, 1, 2, List.of("G2", "B2")),
+        territory("B2", PlayerId.BLUE, 1, 0, 1, List.of("B1")));
+  }
+
+  private List<TerritoryDefinition> captureMap() {
+    return List.of(
+        territory("G1", PlayerId.GREEN, 1, 4, 0, List.of("B1")),
+        territory("G2", PlayerId.GREEN, 2, 1, 0, List.of("B1")),
+        territory("B1", PlayerId.BLUE, 3, 2, 1, List.of("G1", "G2")),
+        territory("B2", PlayerId.BLUE, 1, 0, 2, List.of()));
+  }
+
+  private TerritoryDefinition territory(
+      String name,
+      PlayerId owner,
+      int size,
+      int food,
+      int technology,
+      List<String> neighbors) {
+    EnumMap<ResourceType, Integer> production = new EnumMap<>(ResourceType.class);
+    production.put(ResourceType.FOOD, food);
+    production.put(ResourceType.TECHNOLOGY, technology);
+    return new TerritoryDefinition(name, 0, 0, owner, size, Map.copyOf(production), neighbors, List.of());
   }
 
   private static final class SetOfResources {

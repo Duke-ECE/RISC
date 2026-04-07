@@ -398,6 +398,8 @@ public final class GameEngine {
       log.add("Reinforcement: " + territory.definition().name() + " owned by " + territory.owner().displayName() + " gains 1 unit (" + before + " -> " + territory.units() + ").");
     }
 
+    applyResourceIncome(battleMap, log);
+
     log.add("Turn " + turnNumber + " final map state:");
     for (TerritoryState territory : battleMap.values()) {
       String owner = territory.owner() == null ? "Unoccupied" : territory.owner().displayName();
@@ -408,6 +410,33 @@ public final class GameEngine {
     territories.putAll(battleMap);
     appendEliminationLog(log);
     return log;
+  }
+
+  private void applyResourceIncome(Map<String, TerritoryState> battleMap, List<String> log) {
+    for (PlayerId playerId : players) {
+      EnumMap<ResourceType, Integer> gains = new EnumMap<>(ResourceType.class);
+      gains.put(ResourceType.FOOD, 0);
+      gains.put(ResourceType.TECHNOLOGY, 0);
+
+      for (TerritoryState territory : battleMap.values()) {
+        if (territory.owner() != playerId) {
+          continue;
+        }
+        for (ResourceType type : ResourceType.values()) {
+          gains.merge(type, territory.definition().resourceProduction().getOrDefault(type, 0), Integer::sum);
+        }
+      }
+
+      EnumMap<ResourceType, Integer> totals = resourceTotals.get(playerId);
+      for (ResourceType type : ResourceType.values()) {
+        int gain = gains.getOrDefault(type, 0);
+        int before = totals.getOrDefault(type, 0);
+        int after = before + gain;
+        totals.put(type, after);
+        log.add("Resource income: " + playerId.displayName() + " gains " + gain + " " + type.name()
+            + " (" + before + " -> " + after + ").");
+      }
+    }
   }
 
   private void applyOccupancy(TerritoryState territory) {
