@@ -1,35 +1,28 @@
 # Manual Test Notes
 
-本文件记录当前无法在这个环境内完整自动验证、需要你本地手工确认的项目。
+本文件记录当前推荐保留的手工确认项，以及已经完成的自动化验证。
 
 ## Why Manual Checks Are Needed
 
-当前仓库里有一部分测试已经自动化：
+当前仓库里已经自动化完成：
 
 - `backend`: `mvn test`
-- `frontend`: `npm test -- --run`
+- `frontend`: `npm test`
 - `frontend`: `npm run build`
+- `playwright` smoke：账号登录、创建房间、PJ2 upgrade 提交、active game 切换
 
-但下面这些检查仍依赖本地浏览器或可用的 Playwright 浏览器二进制：
+仍建议保留一轮人工确认的部分：
 
 - 前端页面的真实渲染
 - 地图点击/悬停交互
 - 多窗口加入房间
 - 前后端一起联调后的 UI 行为
 
-## Current Unverified Areas
+## Current Manual Focus
 
-### Frontend PJ2 data display
+### Frontend readability and interaction polish
 
-本轮已经实现，但尚未在真实浏览器中完成 smoke：
-
-- 玩家面板显示 `Tech level`
-- 玩家面板显示 `Resources`
-- 领地详情面板显示：
-  - `Owner`
-  - `Size`
-  - `Production`
-  - `Units`
+这些功能已经通过 smoke 覆盖过，但仍建议在最终提交前做一次肉眼检查：
 
 建议你本地确认：
 
@@ -58,30 +51,27 @@ npm run dev -- --host 127.0.0.1
 
 ```bash
 cd /Users/lea/prj/RISC/frontend
-npm test -- --run
+npm test
 npm run build
 ```
 
 ### Optional browser smoke with Playwright
 
-如果你本地已经装好 Playwright 浏览器：
+如果你本地想复查 smoke：
 
 ```bash
 cd /Users/lea/prj/RISC/frontend
 npx playwright install chromium
 ```
 
-然后可以再跑仓库里的客户端脚本做基本截图：
+可以直接用 skill wrapper：
 
 ```bash
-cd /Users/lea/prj/RISC
-node frontend/web_game_playwright_client.js \
-  --url http://127.0.0.1:5173 \
-  --click-selector '#create-room' \
-  --actions-json '[]' \
-  --iterations 1 \
-  --pause-ms 500 \
-  --screenshot-dir output/playwright/frontend-intel
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
+
+"$PWCLI" open http://127.0.0.1:5173 --headed
+"$PWCLI" snapshot
 ```
 
 ## How To Record Findings

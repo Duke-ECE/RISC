@@ -9,9 +9,9 @@
 
 ## Current Status Snapshot
 
-- 已完成：Phase 0-8，其中包括需求影响面映射、backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示，以及账号登录、多局列表与切换、对应单元测试与浏览器 smoke。
-- 进行中：Phase 9 非代码交付物。
-- 未完成：Phase 9 非代码交付物。
+- 已完成：Phase 0-9，其中包括需求影响面映射、backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示、账号登录、多局列表与切换，以及非代码交付文档、对应测试与浏览器 smoke。
+- 进行中：无。
+- 未完成：无。
 - 当前实现假设：`MOVE` / `ATTACK` 订单未额外让玩家选择出发单位等级时，server 默认优先调度高等级单位，并在 turn log 中输出实际分级明细。
 - 本轮 smoke 产物：`output/playwright/pj2-smoke.png`、`output/playwright/pj2-smoke-state.json`、`output/playwright/pj2-phase8-switch.png`、`output/playwright/pj2-phase8-switch-state.json`
 
@@ -221,10 +221,10 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 9: Non-code deliverables
 
-- [ ] attack order prototype 文档或图片
-- [ ] UX principles 对照说明
-- [ ] 团队会议录屏说明/链接
-- [ ] 更新 UML/architecture 文档
+- [x] attack order prototype 文档或图片
+- [x] UX principles 对照说明
+- [x] 团队会议录屏说明/链接
+- [x] 更新 UML/architecture 文档
 
 测试要求：
 
@@ -247,8 +247,4 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ## Immediate Next Task
 
-下一步建议做 `Phase 9: Non-code deliverables`，原因：
-
-- Phase 1-8 的代码功能已经具备端到端闭环
-- 剩余差距主要在原型、UX 对照、会议说明与 UML/architecture 文档
-- 这一阶段适合以文档和交付物为主，避免把源码任务和课程材料混在同一个 commit
+下一步建议：以最终提交视角做一次整体复查，包括 README、启动命令、以及是否需要额外清理构建产物。
