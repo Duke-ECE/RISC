@@ -79,13 +79,14 @@ const uiText: Record<Lang, Record<string, string>> = {
     startHint: "开始条件：无空位且至少 2 人。座位 {seats}/5 • 玩家 {players}。",
     waitingOn: "等待：{waiting}",
     orders: "指令",
-    ordersHint: "点地图上的领地或用下拉框选择。你可以用全部单位移动/进攻（领地可清空变无人占领）。",
+    ordersHint: "点击地图上的领地来选择来源和目标。你可以用全部单位移动/进攻（领地可清空变无人占领）。",
     move: "移动",
     attack: "进攻",
     fullscreen: "全屏 (F)",
     source: "来源",
     target: "目标",
-    select: "选择",
+    currentSelection: "当前选择",
+    none: "未选择",
     units: "单位数",
     queueOrder: "添加指令",
     clearOrders: "清空计划",
@@ -180,13 +181,14 @@ const uiText: Record<Lang, Record<string, string>> = {
     startHint: "Start requires no empty seats and at least 2 players. Seats {seats}/5 • Players {players}.",
     waitingOn: "Waiting on: {waiting}",
     orders: "Orders",
-    ordersHint: "Click territories on the map or use the selectors below. You may move/attack with all units (territories can become unoccupied).",
+    ordersHint: "Click territories on the map to choose source and target. You may move/attack with all units (territories can become unoccupied).",
     move: "Move",
     attack: "Attack",
     fullscreen: "Fullscreen (F)",
     source: "Source",
     target: "Target",
-    select: "Select",
+    currentSelection: "Current Selection",
+    none: "None",
     units: "Units",
     queueOrder: "Queue Order",
     clearOrders: "Clear Planned Actions",
@@ -283,6 +285,7 @@ function phaseLabel(phase: Phase): string {
 let game: GameView | null = null;
 let setupAllocations: Record<string, number> = {};
 let setupAbandoned: Record<string, boolean> = {};
+let setupSubmitted = false;
 let plannedMoves: PlannedOrder[] = [];
 let plannedAttacks: PlannedOrder[] = [];
 let boardTerritories: Territory[] = [];
@@ -308,6 +311,7 @@ if (roomId) {
 }
 let pollHandle: number | null = null;
 let pollInFlight = false;
+let savedScrollPositions: Record<string, number> = {};
 
 const state = {
   mode: "loading",
@@ -489,6 +493,7 @@ function initializeSetupAllocations(): void {
   if (!game || game.phase !== "SETUP") {
     setupAllocations = {};
     setupAbandoned = {};
+    setupSubmitted = false;
     return;
   }
   const next: Record<string, number> = {};
@@ -585,6 +590,7 @@ async function commitSetup(): Promise<void> {
     } else {
       game = await api<GameView>("/api/game/setup", { method: "POST", body: payload });
     }
+    setupSubmitted = true;
     plannedMoves = [];
     plannedAttacks = [];
     boardTerritories = [];
@@ -946,6 +952,30 @@ function renderLogSections(entries: string[]): string {
   `).join("");
 }
 
+function captureScrollPositions(): void {
+  savedScrollPositions = {};
+  document.querySelectorAll<HTMLElement>("[data-scroll-key]").forEach((element) => {
+    const key = element.dataset.scrollKey;
+    if (!key) {
+      return;
+    }
+    savedScrollPositions[key] = element.scrollTop;
+  });
+}
+
+function restoreScrollPositions(): void {
+  document.querySelectorAll<HTMLElement>("[data-scroll-key]").forEach((element) => {
+    const key = element.dataset.scrollKey;
+    if (!key) {
+      return;
+    }
+    const top = savedScrollPositions[key];
+    if (typeof top === "number") {
+      element.scrollTop = top;
+    }
+  });
+}
+
 function renderTurnSummary(entries: string[]): string {
   const summaries = buildTurnSummary(entries);
   if (summaries.length === 0) {
@@ -986,6 +1016,7 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 function render(): void {
+  captureScrollPositions();
   if (!game) {
     app.innerHTML = `
       <section class="panel">
@@ -1040,6 +1071,7 @@ function render(): void {
   const visibleSeats = seatOrder.slice(0, visibleSeatCount);
   const hasEmptySeats = currentGame.players.length < visibleSeatCount;
   const lastVisibleSeat = visibleSeats[visibleSeats.length - 1] ?? "GREEN";
+  const shouldShowSetup = currentGame.phase === "SETUP" && !setupSubmitted;
   const seatsHtml = `
     <div class="seat-grid" aria-label="Room seats">
       ${visibleSeats.map((seatId) => {
@@ -1059,9 +1091,9 @@ function render(): void {
     </div>
   `;
 
-  const setupHtml = game.phase === "SETUP"
+  const setupHtml = shouldShowSetup
     ? `
-      <section class="panel setup">
+      <section class="panel setup compact-panel">
         <h2>${t("initialPlacement")}</h2>
         <p class="hint">${t("placementHint", { reserve: localPlayer()?.reserveUnits ?? 0 })}</p>
         <div class="setup-grid">
@@ -1084,126 +1116,147 @@ function render(): void {
       </section>`
     : "";
 
-  const orderOptions = ownTerritories()
-    .filter((territory) => availableFromSource(territory.name) > 0)
-    .map((territory) => `<option value="${territory.name}" ${selectedSource === territory.name ? "selected" : ""}>${territory.name}</option>`)
-    .join("");
-  const targetOptions = activeTerritories().map((territory) => `<option value="${territory.name}" ${selectedTarget === territory.name ? "selected" : ""}>${territory.name}</option>`).join("");
-
   app.innerHTML = `
-    <section class="panel">
-      <h1 class="title">RISC</h1>
-      <div class="row">
-        <span>${t("language")}</span>
-        <select id="lang-select">
-          <option value="zh" ${lang === "zh" ? "selected" : ""}>${t("chinese")}</option>
-          <option value="en" ${lang === "en" ? "selected" : ""}>${t("english")}</option>
-        </select>
-      </div>
-      <p class="subtitle">${t("subtitle")}</p>
-      <section class="controls">
-        <h2>${t("multiplayer")}</h2>
-        ${roomId && roomToken
-          ? `
-            <div class="row">
-              <span>${t("room")}: <strong>${roomId}</strong></span>
-              <span>${t("you")}: <strong>${localPlayerId()}</strong></span>
-              <button class="secondary" id="leave-room">${t("leave")}</button>
-              ${game.phase === "LOBBY" && isHost()
-                ? `<button class="secondary" id="new-seat" ${visibleSeatCount >= 5 ? "disabled" : ""}>${t("newSeat")}</button>`
+    <div class="game-layout">
+      <section class="panel topbar-panel">
+        <div class="topbar">
+          <div>
+            <h1 class="title">RISC</h1>
+            <p class="subtitle">${t("subtitle")}</p>
+          </div>
+          <div class="topbar-side">
+            <div class="status-pill">${game.phase === "GAME_OVER" ? t("winnerWins", { winner: game.winner ?? "" }) : phaseLabel(game.phase)}</div>
+            <label class="inline-field">
+              <span>${t("language")}</span>
+              <select id="lang-select">
+                <option value="zh" ${lang === "zh" ? "selected" : ""}>${t("chinese")}</option>
+                <option value="en" ${lang === "en" ? "selected" : ""}>${t("english")}</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <aside class="layout-column left-column" data-scroll-key="left-column">
+        <section class="panel controls compact-panel">
+          <h2>${t("multiplayer")}</h2>
+          ${roomId && roomToken
+            ? `
+              <div class="compact-meta">
+                <div>${t("room")}: <strong>${roomId}</strong></div>
+                <div>${t("you")}: <strong>${localPlayerId()}</strong></div>
+              </div>
+              <div class="buttons">
+                <button class="secondary" id="leave-room">${t("leave")}</button>
+                ${game.phase === "LOBBY" && isHost()
+                  ? `<button class="secondary" id="new-seat" ${visibleSeatCount >= 5 ? "disabled" : ""}>${t("newSeat")}</button>`
+                  : ""}
+                ${game.phase === "LOBBY" && localPlayerId() === "GREEN"
+                  ? `<button id="start-game" ${game.players.length < 2 || game.players.length !== visibleSeatCount ? "disabled" : ""}>${t("startGame")}</button>`
+                  : ""}
+              </div>
+              ${game.phase === "LOBBY" && localPlayerId() === "GREEN"
+                ? `<div class="hint">${t("startHint", { seats: visibleSeatCount, players: game.players.length })}</div>`
                 : ""}
+              ${seatsHtml}
+            `
+            : `
+              <div class="row">
+                <button id="create-room">${t("createRoom")}</button>
+                <input id="join-room-id" placeholder="${t("roomIdPlaceholder")}" value="${joinRoomInput}" />
+                <button class="secondary" id="join-room">${t("join")}</button>
+              </div>
+              <div class="hint">${t("tipJoin")}</div>
+            `}
+          ${game.waitingOnPlayers.length > 0 ? `<div class="hint">${t("waitingOn", { waiting: game.waitingOnPlayers.join(", ") })}</div>` : ""}
+        </section>
+
+        ${setupHtml}
+
+        <section class="panel controls compact-panel">
+          <div class="section-head">
+            <h2>${t("orders")}</h2>
+            <button class="secondary" id="fullscreen-btn">${t("fullscreen")}</button>
+          </div>
+          <p class="hint">${t("ordersHint")}</p>
+          <div class="buttons">
+            <button class="${selectedMode === "MOVE" ? "" : "secondary"}" data-mode="MOVE">${t("move")}</button>
+            <button class="${selectedMode === "ATTACK" ? "" : "secondary"}" data-mode="ATTACK">${t("attack")}</button>
+          </div>
+          <div class="field-grid">
+            <div class="selection-card">
+              <strong>${t("currentSelection")}</strong>
+              <span>${t("source")}: ${selectedSource ?? t("none")}</span>
+              <span>${t("target")}: ${selectedTarget ?? t("none")}</span>
             </div>
-            ${seatsHtml}
-            ${game.phase === "LOBBY" && localPlayerId() === "GREEN"
-              ? `
-                <div class="row">
-                  <button id="start-game" ${game.players.length < 2 || game.players.length !== visibleSeatCount ? "disabled" : ""}>${t("startGame")}</button>
-                  <span class="hint">${t("startHint", { seats: visibleSeatCount, players: game.players.length })}</span>
-                </div>
-              `
-              : ""}
-          `
-          : `
-            <div class="row">
-              <button id="create-room">${t("createRoom")}</button>
-              <input id="join-room-id" placeholder="${t("roomIdPlaceholder")}" value="${joinRoomInput}" />
-              <button class="secondary" id="join-room">${t("join")}</button>
+            <label class="units-field">${t("units")}<input id="units-input" type="number" min="1" value="${selectedUnits}" /></label>
+          </div>
+          <div class="buttons">
+            <button id="queue-order" ${game.phase !== "ORDERS" ? "disabled" : ""}>${t("queueOrder")}</button>
+            <button class="secondary" id="clear-orders">${t("clearOrders")}</button>
+            <button id="commit-turn" ${game.phase !== "ORDERS" ? "disabled" : ""}>${t("commitTurn")}</button>
+            <button class="secondary" id="reset-game">${t("newGame")}</button>
+          </div>
+          <div class="hint status-message">${message || "&nbsp;"}</div>
+        </section>
+      </aside>
+
+      <main class="layout-column center-column" data-scroll-key="center-column">
+        <section class="panel board-shell">
+          <div class="board-meta">
+            <div>
+              <strong>${game.phase === "GAME_OVER" ? t("winnerWins", { winner: game.winner ?? "" }) : t("battleMap")}</strong>
+              <div class="hint">${game.mapNote}</div>
             </div>
-            <div class="hint">${t("tipJoin")}</div>
-          `}
-        ${game.waitingOnPlayers.length > 0 ? `<div class="hint">${t("waitingOn", { waiting: game.waitingOnPlayers.join(", ") })}</div>` : ""}
-      </section>
-      ${setupHtml}
-      <section class="controls">
-        <h2>${t("orders")}</h2>
-        <p class="hint">${t("ordersHint")}</p>
-        <div class="buttons">
-          <button class="${selectedMode === "MOVE" ? "" : "secondary"}" data-mode="MOVE">${t("move")}</button>
-          <button class="${selectedMode === "ATTACK" ? "" : "secondary"}" data-mode="ATTACK">${t("attack")}</button>
-          <button class="secondary" id="fullscreen-btn">${t("fullscreen")}</button>
-        </div>
-        <div class="row">
-          <label>${t("source")}<select id="source-select"><option value="">${t("select")}</option>${orderOptions}</select></label>
-          <label>${t("target")}<select id="target-select"><option value="">${t("select")}</option>${targetOptions}</select></label>
-        </div>
-        <div class="row">
-          <label>${t("units")}<input id="units-input" type="number" min="1" value="${selectedUnits}" /></label>
-          <button id="queue-order" ${game.phase !== "ORDERS" ? "disabled" : ""}>${t("queueOrder")}</button>
-        </div>
-        <div class="buttons">
-          <button class="secondary" id="clear-orders">${t("clearOrders")}</button>
-          <button id="commit-turn" ${game.phase !== "ORDERS" ? "disabled" : ""}>${t("commitTurn")}</button>
-          <button class="secondary" id="reset-game">${t("newGame")}</button>
-        </div>
-        <div class="hint">${message || "&nbsp;"}</div>
-      </section>
-      <section class="players">
-        <h2>${t("factions")}</h2>
-        ${game.players.map((player) => `
-          <article>
-            <strong>${player.displayName}</strong>
-            <div>${t("territoriesLabel")}: ${player.territories}</div>
-            <div>${t("totalUnitsLabel")}: ${player.totalUnits}</div>
-            <div>${player.defeated ? t("defeated") : player.localPlayer ? t("youLabel") : t("opponent")}</div>
-          </article>`).join("")}
-      </section>
-      <section>
-        <h2>${t("queuedAttacks")}</h2>
-        <div class="log">
-          ${plannedAttacks.length === 0
-            ? `<div class="log-entry">${t("noQueuedAttacks")}</div>`
-            : plannedAttacks.map((order, index) => `
-              <div class="log-entry">
-                ATTACK ${order.units} from ${order.source} to ${order.target}
-                <button class="secondary" data-attack-remove="${index}">${t("remove")}</button>
-              </div>`).join("")}
-        </div>
-        <div class="hint">${t("movesApplyHint")}</div>
-      </section>
-      <section>
-        <h2>${t("turnChanges")}</h2>
-        <div class="log turn-summary-log">
-          ${renderTurnSummary(game.lastLog)}
-        </div>
-      </section>
-      <section>
-        <h2>${t("resolutionLog")}</h2>
-        <div class="log battle-log">
-          ${renderLogSections(game.lastLog)}
-        </div>
-      </section>
-    </section>
-    <section class="panel board-shell">
-      <div class="board-meta">
-        <div>
-          <strong>${game.phase === "GAME_OVER" ? t("winnerWins", { winner: game.winner ?? "" }) : t("battleMap")}</strong>
-          <div class="hint">${game.mapNote}</div>
-        </div>
-        <div class="hint">${t("pendingActions", { count: plannedMoves.length + plannedAttacks.length })}</div>
-      </div>
-      <canvas id="game-canvas" aria-label="RISC game board"></canvas>
-    </section>
+            <div class="hint">${t("pendingActions", { count: plannedMoves.length + plannedAttacks.length })}</div>
+          </div>
+          <canvas id="game-canvas" aria-label="RISC game board"></canvas>
+        </section>
+
+        <section class="panel compact-panel">
+          <div class="section-head">
+            <h2>${t("queuedAttacks")}</h2>
+            <div class="hint">${t("movesApplyHint")}</div>
+          </div>
+          <div class="log queued-log" data-scroll-key="queued-log">
+            ${plannedAttacks.length === 0
+              ? `<div class="log-entry">${t("noQueuedAttacks")}</div>`
+              : plannedAttacks.map((order, index) => `
+                <div class="log-entry log-entry-inline">
+                  <span>ATTACK ${order.units} from ${order.source} to ${order.target}</span>
+                  <button class="secondary" data-attack-remove="${index}">${t("remove")}</button>
+                </div>`).join("")}
+          </div>
+        </section>
+      </main>
+
+      <aside class="layout-column right-column" data-scroll-key="right-column">
+        <section class="panel players compact-panel">
+          <h2>${t("factions")}</h2>
+          ${game.players.map((player) => `
+            <article>
+              <strong>${player.displayName}</strong>
+              <div>${t("territoriesLabel")}: ${player.territories}</div>
+              <div>${t("totalUnitsLabel")}: ${player.totalUnits}</div>
+              <div>${player.defeated ? t("defeated") : player.localPlayer ? t("youLabel") : t("opponent")}</div>
+            </article>`).join("")}
+        </section>
+        <section class="panel compact-panel">
+          <h2>${t("turnChanges")}</h2>
+          <div class="log turn-summary-log side-log" data-scroll-key="turn-summary-log">
+            ${renderTurnSummary(game.lastLog)}
+          </div>
+        </section>
+        <section class="panel compact-panel">
+          <h2>${t("resolutionLog")}</h2>
+          <div class="log battle-log side-log" data-scroll-key="battle-log">
+            ${renderLogSections(game.lastLog)}
+          </div>
+        </section>
+      </aside>
+    </div>
   `;
+  restoreScrollPositions();
 
   const langSelect = document.querySelector<HTMLSelectElement>("#lang-select");
   if (langSelect) {
@@ -1252,22 +1305,6 @@ function render(): void {
   if (startButton) {
     startButton.onclick = () => {
       void commitSetup();
-    };
-  }
-
-  const sourceSelect = document.querySelector<HTMLSelectElement>("#source-select");
-  if (sourceSelect) {
-    sourceSelect.onchange = () => {
-      selectedSource = sourceSelect.value || null;
-      render();
-    };
-  }
-
-  const targetSelect = document.querySelector<HTMLSelectElement>("#target-select");
-  if (targetSelect) {
-    targetSelect.onchange = () => {
-      selectedTarget = targetSelect.value || null;
-      render();
     };
   }
 
