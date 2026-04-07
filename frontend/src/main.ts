@@ -1,5 +1,6 @@
 import "./style.css";
 import { groupLogEntries } from "./logSections";
+import { summarizeTerritoryIntel } from "./territoryIntel";
 import { buildTurnSummary } from "./turnSummary";
 
 type Phase = "LOBBY" | "SETUP" | "ORDERS" | "GAME_OVER";
@@ -11,6 +12,9 @@ type Territory = {
   units: number;
   x: number;
   y: number;
+  size: number;
+  resourceProduction: Record<string, number>;
+  unitCounts: Record<string, number>;
   neighbors: string[];
   hidden: boolean;
   polygon?: { x: number; y: number }[] | null;
@@ -24,6 +28,8 @@ type Player = {
   defeated: boolean;
   localPlayer: boolean;
   reserveUnits: number;
+  maxTechnologyLevel: number;
+  resources: Record<string, number>;
 };
 
 type GameView = {
@@ -98,6 +104,14 @@ const uiText: Record<Lang, Record<string, string>> = {
     defeated: "已淘汰",
     territoriesLabel: "领地",
     totalUnitsLabel: "总兵力",
+    resourcesLabel: "资源",
+    techLevelLabel: "科技等级",
+    territoryIntel: "领地情报",
+    territorySize: "规模",
+    territoryOwner: "占领者",
+    territoryOutput: "产出",
+    territoryUnits: "驻军",
+    noTerritoryFocus: "选择或悬停一块领地以查看详细信息。",
     queuedAttacks: "已排队的进攻",
     noQueuedAttacks: "还没有排队的进攻。",
     remove: "删除",
@@ -200,6 +214,14 @@ const uiText: Record<Lang, Record<string, string>> = {
     defeated: "Defeated",
     territoriesLabel: "Territories",
     totalUnitsLabel: "Total units",
+    resourcesLabel: "Resources",
+    techLevelLabel: "Tech level",
+    territoryIntel: "Territory Intel",
+    territorySize: "Size",
+    territoryOwner: "Owner",
+    territoryOutput: "Production",
+    territoryUnits: "Units",
+    noTerritoryFocus: "Select or hover a territory to inspect its details.",
     queuedAttacks: "Queued Attacks",
     noQueuedAttacks: "No queued attacks yet.",
     remove: "Remove",
@@ -1000,6 +1022,36 @@ function renderTurnSummary(entries: string[]): string {
   }).join("");
 }
 
+function formatResourceMap(resources: Record<string, number>): string {
+  return Object.entries(resources)
+    .filter(([, amount]) => amount > 0)
+    .map(([name, amount]) => `${name} ${amount}`)
+    .join(" • ") || "0";
+}
+
+function focusTerritory(): Territory | undefined {
+  return territoryByName(selectedTarget) ?? territoryByName(selectedSource) ?? cursorTerritory();
+}
+
+function renderTerritoryIntel(territory: Territory | undefined): string {
+  if (!territory) {
+    return `<div class="log-entry">${t("noTerritoryFocus")}</div>`;
+  }
+  const summary = summarizeTerritoryIntel(territory);
+  const owner = territory.owner ?? "UNOWNED";
+  const resources = summary.resourceEntries.map(([name, amount]) => `${name} ${amount}`).join(" • ") || "0";
+  const units = summary.unitEntries.map(([name, amount]) => `${name} ${amount}`).join(" • ") || "0";
+  return `
+    <div class="intel-card">
+      <strong>${territory.name}</strong>
+      <div>${t("territoryOwner")}: ${owner}</div>
+      <div>${t("territorySize")}: ${territory.size}</div>
+      <div>${t("territoryOutput")}: ${resources}</div>
+      <div>${t("territoryUnits")}: ${units}</div>
+    </div>
+  `;
+}
+
 function bindAutomationHooks(): void {
   (window as Window & { render_game_to_text?: () => string; advanceTime?: (ms: number) => void }).render_game_to_text = renderTextState;
   (window as Window & { render_game_to_text?: () => string; advanceTime?: (ms: number) => void }).advanceTime = () => {
@@ -1238,8 +1290,16 @@ function render(): void {
               <strong>${player.displayName}</strong>
               <div>${t("territoriesLabel")}: ${player.territories}</div>
               <div>${t("totalUnitsLabel")}: ${player.totalUnits}</div>
+              <div>${t("techLevelLabel")}: ${player.maxTechnologyLevel}</div>
+              <div>${t("resourcesLabel")}: ${formatResourceMap(player.resources)}</div>
               <div>${player.defeated ? t("defeated") : player.localPlayer ? t("youLabel") : t("opponent")}</div>
             </article>`).join("")}
+        </section>
+        <section class="panel compact-panel">
+          <h2>${t("territoryIntel")}</h2>
+          <div class="log side-log">
+            ${renderTerritoryIntel(focusTerritory())}
+          </div>
         </section>
         <section class="panel compact-panel">
           <h2>${t("turnChanges")}</h2>

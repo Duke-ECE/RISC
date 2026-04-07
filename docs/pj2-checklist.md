@@ -150,9 +150,9 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 ### Phase 6: Frontend data display
 
 - [ ] 地图上显示 territory `size`
-- [ ] 显示每块领地的 resource production
-- [ ] 显示每块领地的单位类型/等级分布
-- [ ] 玩家面板显示当前资源与 tech level
+- [x] 显示每块领地的 resource production
+- [x] 显示每块领地的单位类型/等级分布
+- [x] 玩家面板显示当前资源与 tech level
 
 测试要求：
 
