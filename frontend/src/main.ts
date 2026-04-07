@@ -12,6 +12,8 @@ type Territory = {
   x: number;
   y: number;
   neighbors: string[];
+  size: number;
+  resourceProduction: Record<string, number>;
   hidden: boolean;
   polygon?: { x: number; y: number }[] | null;
 };
@@ -97,6 +99,10 @@ const uiText: Record<Lang, Record<string, string>> = {
     defeated: "已淘汰",
     territoriesLabel: "领地",
     totalUnitsLabel: "总兵力",
+    territoryInfo: "领地信息",
+    ownerLabel: "归属",
+    territorySizeLabel: "地形",
+    resourcesLabel: "资源",
     queuedAttacks: "已排队的进攻",
     noQueuedAttacks: "还没有排队的进攻。",
     remove: "删除",
@@ -198,6 +204,10 @@ const uiText: Record<Lang, Record<string, string>> = {
     defeated: "Defeated",
     territoriesLabel: "Territories",
     totalUnitsLabel: "Total units",
+    territoryInfo: "Territory Info",
+    ownerLabel: "Owner",
+    territorySizeLabel: "Size",
+    resourcesLabel: "Resources",
     queuedAttacks: "Queued Attacks",
     noQueuedAttacks: "No queued attacks yet.",
     remove: "Remove",
@@ -333,7 +343,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (roomToken) {
     headers["X-Player-Token"] = roomToken;
   }
-  const response = await fetch(`http://127.0.0.1:8080${path}`, { headers: { ...headers }, ...init });
+  const response = await fetch(`http://localhost:8080${path}`, { headers: { ...headers }, ...init });
   const raw = await response.text();
   let payload: unknown = null;
   try {
@@ -865,6 +875,8 @@ function drawBoard(canvas: HTMLCanvasElement): void {
       context.fillText(territory.name, center.x, center.y - 8);
       context.font = "bold 24px Georgia";
       context.fillText(territory.hidden ? "?" : String(territory.units), center.x, center.y + 24);
+      context.font = "bold 13px Georgia";
+      context.fillText(territoryDetailText(territory), center.x, center.y + 44);
     } else {
       context.beginPath();
       context.arc(territory.x, territory.y, 43, 0, Math.PI * 2);
@@ -876,6 +888,8 @@ function drawBoard(canvas: HTMLCanvasElement): void {
       context.fillText(territory.name, territory.x, territory.y - 8);
       context.font = "bold 24px Georgia";
       context.fillText(territory.hidden ? "?" : String(territory.units), territory.x, territory.y + 24);
+      context.font = "bold 13px Georgia";
+      context.fillText(territoryDetailText(territory), territory.x, territory.y + 44);
     }
   }
 
@@ -912,12 +926,26 @@ function renderTextState(): string {
       units: territory.hidden ? "hidden" : territory.units,
       x: territory.x,
       y: territory.y,
-      neighbors: territory.neighbors
+      neighbors: territory.neighbors,
+      size: territory.size,
+      resourceProduction: territory.resourceProduction
     })),
     players: game.players,
     log: game.lastLog
   };
   return JSON.stringify(payload);
+}
+
+function territoryDetailText(territory: Territory): string {
+  return `S${territory.size} • ${resourceText(territory.resourceProduction)}`;
+}
+
+function resourceText(resources: Record<string, number> | null | undefined): string {
+  const entries = Object.entries(resources ?? {}).filter(([, amount]) => amount > 0);
+  if (entries.length === 0) {
+    return "-";
+  }
+  return entries.map(([name, amount]) => `${name[0]?.toUpperCase() ?? "?"}${amount}`).join(" ");
 }
 
 function renderLogSections(entries: string[]): string {
@@ -1166,6 +1194,19 @@ function render(): void {
             <div>${t("totalUnitsLabel")}: ${player.totalUnits}</div>
             <div>${player.defeated ? t("defeated") : player.localPlayer ? t("youLabel") : t("opponent")}</div>
           </article>`).join("")}
+      </section>
+      <section class="territory-info">
+        <h2>${t("territoryInfo")}</h2>
+        <div class="territory-info-grid">
+          ${activeTerritories().map((territory) => `
+            <article>
+              <strong>${territory.name}</strong>
+              <div>${t("ownerLabel")}: ${territory.owner ?? "UNOWNED"}</div>
+              <div>${t("units")}: ${territory.hidden ? "?" : territory.units}</div>
+              <div>${t("territorySizeLabel")}: ${territory.size}</div>
+              <div>${t("resourcesLabel")}: ${resourceText(territory.resourceProduction)}</div>
+            </article>`).join("")}
+        </div>
       </section>
       <section>
         <h2>${t("queuedAttacks")}</h2>

@@ -104,6 +104,19 @@ button:disabled {
   background: rgba(255, 255, 255, 0.5);
 }
 
+.territory-info-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.territory-info article {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(48, 36, 24, 0.1);
+  line-height: 1.45;
+}
+
 .log {
   max-height: 240px;
   overflow: auto;

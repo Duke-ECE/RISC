@@ -166,6 +166,8 @@ public final class GameEngine {
             territory.definition().x(),
             territory.definition().y(),
             territory.definition().neighbors(),
+            territory.definition().size(),
+            territory.definition().resourceProduction(),
             phase == GamePhase.SETUP && territory.owner() != viewer,
             territory.definition().polygon().stream()
                 .map(vertex -> new VertexView(vertex.x(), vertex.y()))

@@ -73,9 +73,13 @@ public final class MapGenerator {
 
     List<String> territoryNames = names.subList(0, totalTerritories);
     List<PlayerId> territoryOwners = new ArrayList<>(totalTerritories);
+    List<Integer> territorySizes = new ArrayList<>(totalTerritories);
+    List<Map<String, Integer>> territoryResources = new ArrayList<>(totalTerritories);
     for (int playerIndex = 0; playerIndex < players.size(); playerIndex++) {
       for (int j = 0; j < territoriesPerPlayer; j++) {
         territoryOwners.add(players.get(playerIndex));
+        territorySizes.add(List.of(1, 2, 3).get(j));
+        territoryResources.add(resourcePattern(j));
       }
     }
 
@@ -178,10 +182,21 @@ public final class MapGenerator {
           (int) Math.round(centroid.y),
           territoryOwners.get(i),
           neighbors.get(name).stream().toList(),
+          territorySizes.get(i),
+          territoryResources.get(i),
           vertices));
     }
 
     return result;
+  }
+
+  private static Map<String, Integer> resourcePattern(int indexInStartingGroup) {
+    return switch (indexInStartingGroup) {
+      case 0 -> Map.of("food", 3, "technology", 1);
+      case 1 -> Map.of("food", 2, "technology", 2);
+      case 2 -> Map.of("food", 1, "technology", 3);
+      default -> throw new IllegalArgumentException("Unexpected territory index: " + indexInStartingGroup);
+    };
   }
 
   private static void link(Map<String, Set<String>> neighbors, String a, String b) {
