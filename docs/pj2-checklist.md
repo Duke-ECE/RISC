@@ -7,6 +7,14 @@
 - 明确测试
 - 完成后单独提交一次 commit
 
+## Current Status Snapshot
+
+- 已完成：Phase 1-7 的本轮主路径，其中包括 backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示、对应单元测试与浏览器 smoke。
+- 进行中：补更多 Phase 5 边界测试与整理 Phase 0 影响面映射。
+- 未完成：Phase 8 账号与多局返回、Phase 9 非代码交付物。
+- 当前实现假设：`MOVE` / `ATTACK` 订单未额外让玩家选择出发单位等级时，server 默认优先调度高等级单位，并在 turn log 中输出实际分级明细。
+- 本轮 smoke 产物：`output/playwright/pj2-smoke.png`、`output/playwright/pj2-smoke-state.json`
+
 ## Working Rules
 
 - 一次只做一个 checklist item 或一个紧密相关的小组任务。
@@ -108,77 +116,77 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 4: Upgrade orders and tech progression
 
-- [ ] 新增 `UPGRADE_TECH` 或等价升级指令
-- [ ] 新增单位升级指令
-- [ ] 技术升级消耗 technology resource
-- [ ] 技术升级 1 turn 后生效
-- [ ] 每回合最多升 1 级 tech level
-- [ ] 单位升级支持跨级差价
-- [ ] 单位升级受 `maxTechnologyLevel` 限制
+- [x] 新增 `UPGRADE_TECH` 或等价升级指令
+- [x] 新增单位升级指令
+- [x] 技术升级消耗 technology resource
+- [x] 技术升级 1 turn 后生效
+- [x] 每回合最多升 1 级 tech level
+- [x] 单位升级支持跨级差价
+- [x] 单位升级受 `maxTechnologyLevel` 限制
 
 测试要求：
 
-- 后端测试：tech level 从 1 开始
-- 后端测试：tech upgrade 延迟 1 回合生效
-- 后端测试：同回合不能升多级
-- 后端测试：单位升级按差价收费
-- 后端测试：超过 tech level 限制时报错
+- [x] 后端测试：tech level 从 1 开始
+- [x] 后端测试：tech upgrade 延迟 1 回合生效
+- [x] 后端测试：同回合不能升多级
+- [x] 后端测试：单位升级按差价收费
+- [x] 后端测试：超过 tech level 限制时报错
 
 完成定义：
 
-- API 能表达 upgrade order
-- log 能说明升级结果和生效时机
+- [x] API 能表达 upgrade order
+- [x] log 能说明升级结果和生效时机
 
 ### Phase 5: Combat v2
 
-- [ ] combat roll 加上单位 bonus
-- [ ] 实现 attacker/defender 配对规则
-- [ ] 支持混合等级部队战斗
-- [ ] 战斗日志输出实际参与配对和 bonus
+- [x] combat roll 加上单位 bonus
+- [x] 实现 attacker/defender 配对规则
+- [x] 支持混合等级部队战斗
+- [x] 战斗日志输出实际参与配对和 bonus
 
 测试要求：
 
-- 后端测试：不同 level 单位 bonus 生效
-- 后端测试：配对顺序符合 pj2 规则
-- 后端测试：多来源合并攻击后仍按单位等级正确结算
-- 后端测试：多方攻击同一地与新 bonus 规则兼容
+- [x] 后端测试：不同 level 单位 bonus 生效
+- [x] 后端测试：配对顺序符合 pj2 规则
+- [ ] 后端测试：多来源合并攻击后仍按单位等级正确结算
+- [ ] 后端测试：多方攻击同一地与新 bonus 规则兼容
 
 完成定义：
 
-- combat 行为与 pj2 规则一致
+- [x] combat 行为与 pj2 规则一致
 
 ### Phase 6: Frontend data display
 
-- [ ] 地图上显示 territory `size`
+- [x] 地图上显示 territory `size`
 - [x] 显示每块领地的 resource production
 - [x] 显示每块领地的单位类型/等级分布
 - [x] 玩家面板显示当前资源与 tech level
 
 测试要求：
 
-- 前端单元测试：新字段渲染格式
-- `playwright` smoke：能在 UI 中看到 size/resource/tech 信息
+- [x] 前端单元测试：新字段渲染格式
+- [x] `playwright` smoke：能在 UI 中看到 size/resource/tech 信息
 
 完成定义：
 
-- 不要求本阶段完成升级交互，只先把信息展示出来
+- [x] 不要求本阶段完成升级交互，只先把信息展示出来
 
 ### Phase 7: Frontend order entry for PJ2
 
-- [ ] 为 upgrade order 提供 UI
-- [ ] 下单前展示预计资源消耗
-- [ ] 非法升级选择在前端提前提示
-- [ ] 保持 server 为最终裁决者
+- [x] 为 upgrade order 提供 UI
+- [x] 下单前展示预计资源消耗
+- [x] 非法升级选择在前端提前提示
+- [x] 保持 server 为最终裁决者
 
 测试要求：
 
-- 前端单元测试：表单状态与文案
-- `playwright` smoke：创建房间并完成一次 upgrade 提交
-- `playwright` smoke：非法输入能看到错误提示
+- [x] 前端单元测试：表单状态与文案
+- [x] `playwright` smoke：创建房间并完成一次 upgrade 提交
+- [x] `playwright` smoke：非法输入能看到错误提示
 
 完成定义：
 
-- UI 可以完整操作 pj2 新规则
+- [x] UI 可以完整操作 pj2 新规则
 
 ### Phase 8: Accounts and game return
 
@@ -226,8 +234,8 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ## Immediate Next Task
 
-下一步建议做 `Phase 4: Upgrade orders and tech progression`，原因：
+下一步建议做 `Phase 8: Accounts and game return`，原因：
 
-- `food` 成本已经接进回合规则，接下来应该把 `technology` 资源也真正用起来
-- 单位升级和科技升级会直接影响 `Phase 5` 的 combat v2
-- 继续保持后端先行，可以先把规则和测试做稳，再接前端交互
+- Phase 1-7 的 PJ2 主玩法已经具备端到端闭环
+- 当前最大剩余需求已经从“规则未实现”转成“身份与多局返回”
+- 若继续推进，可以把一次性 room token 身份升级成可回到历史 game 的账号体系

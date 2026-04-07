@@ -247,46 +247,43 @@ public final class GameEngine {
     Map<String, TerritoryState> battleMap = cloneTerritories();
     List<String> log = new ArrayList<>();
 
+    List<OrderCommand> techUpgradeOrders = allOrders.stream().filter(order -> order.type() == OrderType.UPGRADE_TECH).toList();
+    List<OrderCommand> unitUpgradeOrders = allOrders.stream().filter(order -> order.type() == OrderType.UPGRADE_UNIT).toList();
     List<OrderCommand> moveOrders = allOrders.stream().filter(order -> order.type() == OrderType.MOVE).toList();
     List<OrderCommand> attackOrders = allOrders.stream().filter(order -> order.type() == OrderType.ATTACK).toList();
 
     log.add("Turn " + turnNumber + " begins.");
+    appendOrderSection(log, "Committed tech upgrades", techUpgradeOrders);
+    appendOrderSection(log, "Committed unit upgrades", unitUpgradeOrders);
     appendOrderSection(log, "Committed move orders", moveOrders);
     appendOrderSection(log, "Committed attack orders", attackOrders);
     log.addAll(applyOrderCosts(allOrders));
 
-    // Move phase: apply departures first, then resolve arrivals. If multiple players arrive at the same territory,
-    // resolve combat like attacks.
-    Map<String, Integer> moveDepartures = new HashMap<>();
-    for (OrderCommand move : moveOrders) {
-      moveDepartures.merge(move.source(), move.units(), Integer::sum);
-    }
-    for (Map.Entry<String, Integer> entry : moveDepartures.entrySet()) {
-      TerritoryState source = battleMap.get(entry.getKey());
-      int before = source.units();
-      source.units(source.units() - entry.getValue());
-      applyOccupancy(source);
-      log.add("Move departure: " + entry.getKey() + " commits " + entry.getValue() + " units, leaving " + before + " -> " + source.units() + ".");
-    }
+    applyUnitUpgrades(unitUpgradeOrders, battleMap, log);
 
     Map<String, Map<PlayerId, AttackGroup>> groupedMoveArrivals = new LinkedHashMap<>();
     for (OrderCommand move : moveOrders) {
+      TerritoryState source = territory(battleMap, move.source());
+      UnitSelection departing = takeUnits(source, move.units());
+      log.add("Move departure: " + move.source() + " commits " + departing.totalUnits() + " units "
+          + formatUnitBreakdown(departing.unitCounts()) + ", leaving " + source.units() + ".");
       groupedMoveArrivals
           .computeIfAbsent(move.target(), key -> new LinkedHashMap<>())
           .computeIfAbsent(move.playerId(), key -> new AttackGroup(move.playerId(), move.target()))
-          .addSource(move.source(), move.units());
+          .addSource(move.source(), departing.unitCounts());
+      applyOccupancy(source);
     }
 
     for (Map.Entry<String, Map<PlayerId, AttackGroup>> entry : groupedMoveArrivals.entrySet()) {
-      TerritoryState target = battleMap.get(entry.getKey());
+      TerritoryState target = territory(battleMap, entry.getKey());
 
-      // Friendly arrivals reinforce the defender before any fights.
       if (target.owner() != null) {
         AttackGroup friendly = entry.getValue().remove(target.owner());
-        if (friendly != null && friendly.totalUnits > 0) {
-          int before = target.units();
-          target.units(target.units() + friendly.totalUnits);
-          log.add("Move reinforcement: " + target.definition().name() + " receives " + friendly.totalUnits + " friendly units (" + before + " -> " + target.units() + ").");
+        if (friendly != null && friendly.totalUnits() > 0) {
+          target.addUnits(friendly.unitCounts());
+          log.add("Move reinforcement: " + target.definition().name() + " receives "
+              + friendly.totalUnits() + " friendly units " + formatUnitBreakdown(friendly.unitCounts())
+              + ", now " + formatUnitBreakdown(target.unitCounts()) + ".");
         }
       }
 
@@ -295,97 +292,90 @@ public final class GameEngine {
         continue;
       }
       Collections.shuffle(arrivals, random);
-
-      log.add(
-          "Move contest at " + entry.getKey() + ": defender is " + (target.owner() == null ? "Unoccupied" : target.owner().displayName())
-              + " with " + target.units() + " units; arrival order = "
-              + arrivals.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
+      log.add("Move contest at " + entry.getKey() + ": defender is "
+          + (target.owner() == null ? "Unoccupied" : target.owner().displayName())
+          + " with " + target.units() + " units " + formatUnitBreakdown(target.unitCounts())
+          + "; arrival order = " + arrivals.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
 
       for (AttackGroup group : arrivals) {
         if (target.owner() == null) {
-          target.owner(group.playerId);
-          target.units(group.totalUnits);
-          log.add("Occupation: " + group.playerId.displayName() + " takes " + target.definition().name() + " with " + group.totalUnits + " units.");
+          target.owner(group.playerId());
+          target.setUnitCounts(group.unitCounts());
+          log.add("Occupation: " + group.playerId().displayName() + " takes " + target.definition().name()
+              + " with " + group.totalUnits() + " units " + formatUnitBreakdown(group.unitCounts()) + ".");
           continue;
         }
-        if (target.owner() == group.playerId) {
-          int before = target.units();
-          target.units(target.units() + group.totalUnits);
-          log.add("Move merge: " + group.playerId.displayName() + " adds " + group.totalUnits + " units into " + target.definition().name() + " (" + before + " -> " + target.units() + ").");
+        if (target.owner() == group.playerId()) {
+          target.addUnits(group.unitCounts());
+          log.add("Move merge: " + group.playerId().displayName() + " adds "
+              + group.totalUnits() + " units into " + target.definition().name()
+              + ", now " + formatUnitBreakdown(target.unitCounts()) + ".");
           continue;
         }
         CombatResult result = fight(
-            group.playerId,
-            group.totalUnits,
+            group.playerId(),
+            group.unitCounts(),
             target.owner(),
-            target.units(),
+            target.unitCounts(),
             target.definition().name(),
-            group.sources);
-        log.addAll(result.details);
-        if (result.attackerWon) {
-          target.owner(group.playerId);
-          target.units(result.attackerUnitsRemaining);
+            group.sources());
+        log.addAll(result.details());
+        if (result.attackerWon()) {
+          target.owner(group.playerId());
+          target.setUnitCounts(result.attackerRemaining());
         } else {
-          target.units(result.defenderUnitsRemaining);
+          target.setUnitCounts(result.defenderRemaining());
         }
         applyOccupancy(target);
       }
     }
 
-    // Attack departures happen before battle resolution.
-    Map<String, Integer> attackDepartures = new HashMap<>();
-    for (OrderCommand attack : attackOrders) {
-      attackDepartures.merge(attack.source(), attack.units(), Integer::sum);
-    }
-    for (Map.Entry<String, Integer> entry : attackDepartures.entrySet()) {
-      TerritoryState source = battleMap.get(entry.getKey());
-      int before = source.units();
-      source.units(source.units() - entry.getValue());
-      applyOccupancy(source);
-      log.add("Attack departure: " + entry.getKey() + " commits " + entry.getValue() + " units, leaving " + before + " -> " + source.units() + ".");
-    }
-
     Map<String, Map<PlayerId, AttackGroup>> groupedByTarget = new LinkedHashMap<>();
     for (OrderCommand attack : attackOrders) {
+      TerritoryState source = territory(battleMap, attack.source());
+      UnitSelection departing = takeUnits(source, attack.units());
+      log.add("Attack departure: " + attack.source() + " commits " + departing.totalUnits() + " units "
+          + formatUnitBreakdown(departing.unitCounts()) + ", leaving " + source.units() + ".");
       groupedByTarget
           .computeIfAbsent(attack.target(), key -> new LinkedHashMap<>())
           .computeIfAbsent(attack.playerId(), key -> new AttackGroup(attack.playerId(), attack.target()))
-          .addSource(attack.source(), attack.units());
+          .addSource(attack.source(), departing.unitCounts());
+      applyOccupancy(source);
     }
 
     for (Map.Entry<String, Map<PlayerId, AttackGroup>> entry : groupedByTarget.entrySet()) {
-      TerritoryState defendingTerritory = battleMap.get(entry.getKey());
+      TerritoryState defendingTerritory = territory(battleMap, entry.getKey());
       List<AttackGroup> attackers = new ArrayList<>(entry.getValue().values());
       Collections.shuffle(attackers, random);
-      log.add(
-          "Battle queue at " + entry.getKey() + ": defender is " + (defendingTerritory.owner() == null ? "Unoccupied" : defendingTerritory.owner().displayName())
-              + " with " + defendingTerritory.units() + " units; attack order = "
-              + attackers.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
+      log.add("Battle queue at " + entry.getKey() + ": defender is "
+          + (defendingTerritory.owner() == null ? "Unoccupied" : defendingTerritory.owner().displayName())
+          + " with " + defendingTerritory.units() + " units " + formatUnitBreakdown(defendingTerritory.unitCounts())
+          + "; attack order = " + attackers.stream().map(AttackGroup::summary).collect(Collectors.joining(" -> ")) + ".");
       for (AttackGroup attackGroup : attackers) {
-        if (defendingTerritory.owner() == attackGroup.playerId) {
+        if (defendingTerritory.owner() == attackGroup.playerId()) {
           continue;
         }
         if (defendingTerritory.owner() == null) {
-          defendingTerritory.owner(attackGroup.playerId);
-          defendingTerritory.units(attackGroup.totalUnits);
-          log.add(
-              "Occupation: " + attackGroup.playerId.displayName() + " takes " + defendingTerritory.definition().name()
-                  + " unopposed with " + attackGroup.totalUnits + " units.");
+          defendingTerritory.owner(attackGroup.playerId());
+          defendingTerritory.setUnitCounts(attackGroup.unitCounts());
+          log.add("Occupation: " + attackGroup.playerId().displayName() + " takes "
+              + defendingTerritory.definition().name() + " unopposed with "
+              + attackGroup.totalUnits() + " units " + formatUnitBreakdown(attackGroup.unitCounts()) + ".");
           continue;
         }
         CombatResult result = fight(
-            attackGroup.playerId,
-            attackGroup.totalUnits,
+            attackGroup.playerId(),
+            attackGroup.unitCounts(),
             defendingTerritory.owner(),
-            defendingTerritory.units(),
+            defendingTerritory.unitCounts(),
             defendingTerritory.definition().name(),
-            attackGroup.sources);
-        log.addAll(result.details);
-        if (result.attackerWon) {
-          defendingTerritory.owner(attackGroup.playerId);
-          defendingTerritory.units(result.attackerUnitsRemaining);
+            attackGroup.sources());
+        log.addAll(result.details());
+        if (result.attackerWon()) {
+          defendingTerritory.owner(attackGroup.playerId());
+          defendingTerritory.setUnitCounts(result.attackerRemaining());
         } else {
-          defendingTerritory.units(result.defenderUnitsRemaining);
+          defendingTerritory.setUnitCounts(result.defenderRemaining());
         }
         applyOccupancy(defendingTerritory);
       }
@@ -395,17 +385,20 @@ public final class GameEngine {
       if (territory.owner() == null) {
         continue;
       }
-      int before = territory.units();
-      territory.units(territory.units() + 1);
-      log.add("Reinforcement: " + territory.definition().name() + " owned by " + territory.owner().displayName() + " gains 1 unit (" + before + " -> " + territory.units() + ").");
+      territory.addUnits(UnitLevel.BASIC, 1);
+      log.add("Reinforcement: " + territory.definition().name() + " owned by "
+          + territory.owner().displayName() + " gains 1 BASIC unit, now "
+          + formatUnitBreakdown(territory.unitCounts()) + ".");
     }
 
     applyResourceIncome(battleMap, log);
+    applyTechUpgrades(techUpgradeOrders, log);
 
     log.add("Turn " + turnNumber + " final map state:");
     for (TerritoryState territory : battleMap.values()) {
       String owner = territory.owner() == null ? "Unoccupied" : territory.owner().displayName();
-      log.add(" - " + territory.definition().name() + ": " + owner + " holds " + territory.units() + " units.");
+      log.add(" - " + territory.definition().name() + ": " + owner + " holds "
+          + territory.units() + " units " + formatUnitBreakdown(territory.unitCounts()) + ".");
     }
 
     territories.clear();
@@ -443,52 +436,60 @@ public final class GameEngine {
 
   private void applyOccupancy(TerritoryState territory) {
     if (territory.units() <= 0) {
-      territory.units(0);
+      territory.setUnitCounts(Map.of());
       territory.owner(null);
     }
   }
 
   private CombatResult fight(
       PlayerId attacker,
-      int attackers,
+      Map<UnitLevel, Integer> attackers,
       PlayerId defender,
-      int defenders,
+      Map<UnitLevel, Integer> defenders,
       String territoryName,
       List<String> sources) {
-    int attackerUnits = attackers;
-    int defenderUnits = defenders;
+    EnumMap<UnitLevel, Integer> attackerUnits = copyUnitCounts(attackers);
+    EnumMap<UnitLevel, Integer> defenderUnits = copyUnitCounts(defenders);
     int rounds = 0;
     List<String> details = new ArrayList<>();
-    details.add(
-        "Combat starts at " + territoryName + ": " + attacker.displayName() + " attacks from "
-            + String.join(", ", sources) + " with " + attackers + " units against "
-            + defender.displayName() + " defending with " + defenders + " units.");
-    while (attackerUnits > 0 && defenderUnits > 0) {
+    details.add("Combat starts at " + territoryName + ": " + attacker.displayName() + " attacks from "
+        + String.join(", ", sources) + " with " + totalUnits(attackers) + " units " + formatUnitBreakdown(attackers)
+        + " against " + defender.displayName() + " defending with " + totalUnits(defenders) + " units "
+        + formatUnitBreakdown(defenders) + ".");
+    boolean highAttackerLowDefender = true;
+    while (totalUnits(attackerUnits) > 0 && totalUnits(defenderUnits) > 0) {
       rounds += 1;
-      int attackRoll = random.nextInt(20) + 1;
-      int defendRoll = random.nextInt(20) + 1;
+      UnitLevel attackerLevel = pickUnit(attackerUnits, highAttackerLowDefender);
+      UnitLevel defenderLevel = pickUnit(defenderUnits, !highAttackerLowDefender);
+      int attackerRollBase = random.nextInt(20) + 1;
+      int defenderRollBase = random.nextInt(20) + 1;
+      int attackRoll = attackerRollBase + attackerLevel.combatBonus();
+      int defendRoll = defenderRollBase + defenderLevel.combatBonus();
       if (attackRoll > defendRoll) {
-        defenderUnits -= 1;
-        details.add(
-            "  Round " + rounds + ": attacker rolls " + attackRoll + ", defender rolls " + defendRoll
-                + " -> defender loses 1 (" + attackerUnits + " attackers left, " + defenderUnits + " defenders left).");
+        defenderUnits.put(defenderLevel, defenderUnits.get(defenderLevel) - 1);
+        details.add("  Round " + rounds + ": A " + attackerLevel.name() + " (" + attackerRollBase + "+"
+            + attackerLevel.combatBonus() + "=" + attackRoll + ") vs D " + defenderLevel.name() + " ("
+            + defenderRollBase + "+" + defenderLevel.combatBonus() + "=" + defendRoll + ") -> defender loses 1 "
+            + defenderLevel.name() + ".");
       } else {
-        attackerUnits -= 1;
-        details.add(
-            "  Round " + rounds + ": attacker rolls " + attackRoll + ", defender rolls " + defendRoll
-                + " -> attacker loses 1 (" + attackerUnits + " attackers left, " + defenderUnits + " defenders left).");
+        attackerUnits.put(attackerLevel, attackerUnits.get(attackerLevel) - 1);
+        details.add("  Round " + rounds + ": A " + attackerLevel.name() + " (" + attackerRollBase + "+"
+            + attackerLevel.combatBonus() + "=" + attackRoll + ") vs D " + defenderLevel.name() + " ("
+            + defenderRollBase + "+" + defenderLevel.combatBonus() + "=" + defendRoll + ") -> attacker loses 1 "
+            + attackerLevel.name() + ".");
       }
+      highAttackerLowDefender = !highAttackerLowDefender;
     }
-    if (attackerUnits > 0) {
-      details.add(
-          "Combat result: " + attacker.displayName() + " conquers " + territoryName + " from "
-              + defender.displayName() + " after " + rounds + " rounds and keeps " + attackerUnits + " units there.");
-      return new CombatResult(true, attackerUnits, 0, details);
+    if (totalUnits(attackerUnits) > 0) {
+      details.add("Combat result: " + attacker.displayName() + " conquers " + territoryName + " from "
+          + defender.displayName() + " after " + rounds + " rounds and keeps "
+          + totalUnits(attackerUnits) + " units " + formatUnitBreakdown(attackerUnits) + " there.");
+      return new CombatResult(true, attackerUnits, zeroUnitCounts(), details);
     }
-    details.add(
-        "Combat result: " + defender.displayName() + " holds " + territoryName + " against "
-            + attacker.displayName() + " after " + rounds + " rounds and keeps " + defenderUnits + " units there.");
-    return new CombatResult(false, 0, defenderUnits, details);
+    details.add("Combat result: " + defender.displayName() + " holds " + territoryName + " against "
+        + attacker.displayName() + " after " + rounds + " rounds and keeps "
+        + totalUnits(defenderUnits) + " units " + formatUnitBreakdown(defenderUnits) + " there.");
+    return new CombatResult(false, zeroUnitCounts(), defenderUnits, details);
   }
 
   private void appendOrderSection(List<String> log, String title, List<OrderCommand> orders) {
@@ -498,9 +499,15 @@ public final class GameEngine {
       return;
     }
     for (OrderCommand order : orders) {
-      log.add(
-          " - " + order.playerId().displayName() + " " + order.type().name() + " " + order.units()
-              + " from " + order.source() + " to " + order.target());
+      if (order.type() == OrderType.UPGRADE_TECH) {
+        log.add(" - " + order.playerId().displayName() + " UPGRADE_TECH");
+      } else if (order.type() == OrderType.UPGRADE_UNIT) {
+        log.add(" - " + order.playerId().displayName() + " UPGRADE_UNIT " + order.units() + " in "
+            + order.source() + " from " + order.fromLevel() + " to " + order.toLevel());
+      } else {
+        log.add(" - " + order.playerId().displayName() + " " + order.type().name() + " " + order.units()
+            + " from " + order.source() + " to " + order.target());
+      }
     }
   }
 
@@ -535,30 +542,6 @@ public final class GameEngine {
     priceOrders(playerId, orders, state);
   }
 
-  private boolean hasFriendlyPath(PlayerId playerId, String source, String target, Map<String, TerritoryState> state) {
-    if (Objects.equals(source, target)) {
-      return true;
-    }
-    Set<String> visited = new HashSet<>();
-    ArrayDeque<String> queue = new ArrayDeque<>();
-    queue.add(source);
-    visited.add(source);
-    while (!queue.isEmpty()) {
-      String current = queue.removeFirst();
-      for (String neighbor : territory(state, current).definition().neighbors()) {
-        TerritoryState neighborState = territory(state, neighbor);
-        if (neighborState.owner() != playerId || !visited.add(neighbor)) {
-          continue;
-        }
-        if (neighbor.equals(target)) {
-          return true;
-        }
-        queue.addLast(neighbor);
-      }
-    }
-    return false;
-  }
-
   private List<String> applyOrderCosts(List<OrderCommand> allOrders) {
     List<String> log = new ArrayList<>();
     Map<PlayerId, List<OrderCommand>> byPlayer = allOrders.stream().collect(Collectors.groupingBy(
@@ -575,8 +558,13 @@ public final class GameEngine {
       int beforeFood = totals.getOrDefault(ResourceType.FOOD, 0);
       int afterFood = beforeFood - summary.foodSpent();
       totals.put(ResourceType.FOOD, afterFood);
+      int beforeTech = totals.getOrDefault(ResourceType.TECHNOLOGY, 0);
+      int afterTech = beforeTech - summary.technologySpent();
+      totals.put(ResourceType.TECHNOLOGY, afterTech);
       log.add("Resource spend: " + playerId.displayName() + " spends " + summary.foodSpent()
           + " FOOD on orders (" + beforeFood + " -> " + afterFood + ").");
+      log.add("Resource spend: " + playerId.displayName() + " spends " + summary.technologySpent()
+          + " TECHNOLOGY on orders (" + beforeTech + " -> " + afterTech + ").");
       log.addAll(summary.details());
     }
     return log;
@@ -584,11 +572,72 @@ public final class GameEngine {
 
   private OrderCostSummary priceOrders(PlayerId playerId, List<OrderCommand> orders, Map<String, TerritoryState> state) {
     Map<String, TerritoryState> scratch = cloneTerritories(state);
+    List<OrderCommand> techUpgradeOrders = orders.stream().filter(order -> order.type() == OrderType.UPGRADE_TECH).toList();
+    List<OrderCommand> unitUpgradeOrders = orders.stream().filter(order -> order.type() == OrderType.UPGRADE_UNIT).toList();
     List<OrderCommand> moveOrders = orders.stream().filter(order -> order.type() == OrderType.MOVE).toList();
     List<OrderCommand> attackOrders = orders.stream().filter(order -> order.type() == OrderType.ATTACK).toList();
     List<String> details = new ArrayList<>();
     int availableFood = resourceTotals.getOrDefault(playerId, new EnumMap<>(ResourceType.class)).getOrDefault(ResourceType.FOOD, 0);
+    int availableTechnology = resourceTotals.getOrDefault(playerId, new EnumMap<>(ResourceType.class)).getOrDefault(ResourceType.TECHNOLOGY, 0);
     int spentFood = 0;
+    int spentTechnology = 0;
+    int currentTechLevel = maxTechnologyLevel.getOrDefault(playerId, 1);
+
+    if (techUpgradeOrders.size() > 1) {
+      throw new IllegalArgumentException("Only one tech upgrade may be queued per turn.");
+    }
+    if (!techUpgradeOrders.isEmpty()) {
+      if (currentTechLevel >= 6) {
+        throw new IllegalArgumentException("Technology is already at the maximum level.");
+      }
+      int cost = techUpgradeCost(currentTechLevel);
+      if (cost > availableTechnology) {
+        throw new IllegalArgumentException("Not enough TECHNOLOGY for tech upgrade. Need " + cost + ", have " + availableTechnology + ".");
+      }
+      spentTechnology += cost;
+      details.add(" - " + playerId.displayName() + " UPGRADE_TECH from " + currentTechLevel + " to "
+          + (currentTechLevel + 1) + " costs " + cost + " TECHNOLOGY and completes next turn.");
+    }
+
+    for (OrderCommand order : unitUpgradeOrders) {
+      if (order.playerId() != playerId) {
+        throw new IllegalArgumentException("Mixed-player orders are not allowed.");
+      }
+      if (order.source() == null || order.source().isBlank()) {
+        throw new IllegalArgumentException("Unit upgrades need a source territory.");
+      }
+      if (order.fromLevel() == null || order.toLevel() == null) {
+        throw new IllegalArgumentException("Unit upgrades must specify both fromLevel and toLevel.");
+      }
+      if (order.units() <= 0) {
+        throw new IllegalArgumentException("Order units must be positive.");
+      }
+      TerritoryState source = territory(scratch, order.source());
+      if (source.owner() != playerId) {
+        throw new IllegalArgumentException("You can only upgrade units in territories you control.");
+      }
+      if (order.toLevel().requiredTechLevel() > currentTechLevel) {
+        throw new IllegalArgumentException("Cannot upgrade to " + order.toLevel().name()
+            + " while max technology level is " + currentTechLevel + ".");
+      }
+      if (order.toLevel().ordinal() <= order.fromLevel().ordinal()) {
+        throw new IllegalArgumentException("Unit upgrades must move to a higher level.");
+      }
+      if (source.unitCount(order.fromLevel()) < order.units()) {
+        throw new IllegalArgumentException("Not enough " + order.fromLevel().name() + " units in " + order.source() + ".");
+      }
+      int cost = (order.toLevel().totalCost() - order.fromLevel().totalCost()) * order.units();
+      if (spentTechnology + cost > availableTechnology) {
+        throw new IllegalArgumentException("Not enough TECHNOLOGY for unit upgrade in " + order.source()
+            + ". Need " + cost + ", have " + (availableTechnology - spentTechnology) + ".");
+      }
+      spentTechnology += cost;
+      source.removeUnits(order.fromLevel(), order.units());
+      source.addUnits(order.toLevel(), order.units());
+      details.add(" - " + playerId.displayName() + " UPGRADE_UNIT " + order.units() + " in "
+          + order.source() + " from " + order.fromLevel().name() + " to " + order.toLevel().name()
+          + " costs " + cost + " TECHNOLOGY.");
+    }
 
     for (OrderCommand order : moveOrders) {
       if (order.playerId() != playerId) {
@@ -619,15 +668,13 @@ public final class GameEngine {
       details.add(" - " + playerId.displayName() + " MOVE " + order.units() + " from " + order.source() + " to "
           + order.target() + " costs " + orderFoodCost + " FOOD (path size " + pathSize + ").");
 
-      source.units(source.units() - order.units());
+      takeUnits(source, order.units());
       applyOccupancy(source);
       if (target.owner() == null) {
         target.owner(playerId);
       }
-      target.units(target.units() + order.units());
+      target.addUnits(zeroUnitCounts());
     }
-
-    Map<String, Integer> committedFromSource = new HashMap<>();
     for (OrderCommand order : attackOrders) {
       if (order.playerId() != playerId) {
         throw new IllegalArgumentException("Mixed-player orders are not allowed.");
@@ -643,9 +690,7 @@ public final class GameEngine {
       if (order.units() <= 0) {
         throw new IllegalArgumentException("Order units must be positive.");
       }
-
-      int remaining = source.units() - committedFromSource.getOrDefault(order.source(), 0);
-      if (remaining - order.units() < 0) {
+      if (order.units() > source.units()) {
         throw new IllegalArgumentException("That territory does not have enough units available.");
       }
 
@@ -664,10 +709,11 @@ public final class GameEngine {
       spentFood += orderFoodCost;
       details.add(" - " + playerId.displayName() + " ATTACK " + order.units() + " from " + order.source() + " to "
           + order.target() + " costs " + orderFoodCost + " FOOD.");
-      committedFromSource.merge(order.source(), order.units(), Integer::sum);
+      takeUnits(source, order.units());
+      applyOccupancy(source);
     }
 
-    return new OrderCostSummary(spentFood, details);
+    return new OrderCostSummary(spentFood, spentTechnology, details);
   }
 
   private int resolveMovePathSize(PlayerId playerId, TerritoryState source, TerritoryState target, Map<String, TerritoryState> state) {
@@ -744,7 +790,7 @@ public final class GameEngine {
   private Map<String, TerritoryState> cloneTerritories() {
     Map<String, TerritoryState> clone = new LinkedHashMap<>();
     for (TerritoryState territory : territories.values()) {
-      clone.put(territory.definition().name(), new TerritoryState(territory.definition(), territory.owner(), territory.units()));
+      clone.put(territory.definition().name(), territory.copy());
     }
     return clone;
   }
@@ -752,7 +798,7 @@ public final class GameEngine {
   private Map<String, TerritoryState> cloneTerritories(Map<String, TerritoryState> source) {
     Map<String, TerritoryState> clone = new LinkedHashMap<>();
     for (TerritoryState territory : source.values()) {
-      clone.put(territory.definition().name(), new TerritoryState(territory.definition(), territory.owner(), territory.units()));
+      clone.put(territory.definition().name(), territory.copy());
     }
     return clone;
   }
@@ -769,10 +815,110 @@ public final class GameEngine {
     return territory;
   }
 
-  private static final class AttackGroup {
+  private void applyUnitUpgrades(List<OrderCommand> unitUpgradeOrders, Map<String, TerritoryState> state, List<String> log) {
+    for (OrderCommand order : unitUpgradeOrders) {
+      TerritoryState territory = territory(state, order.source());
+      territory.removeUnits(order.fromLevel(), order.units());
+      territory.addUnits(order.toLevel(), order.units());
+      log.add("Unit upgrade applied: " + order.playerId().displayName() + " upgrades " + order.units() + " units in "
+          + order.source() + " from " + order.fromLevel().name() + " to " + order.toLevel().name()
+          + ", now " + formatUnitBreakdown(territory.unitCounts()) + ".");
+    }
+  }
+
+  private void applyTechUpgrades(List<OrderCommand> techUpgradeOrders, List<String> log) {
+    for (OrderCommand order : techUpgradeOrders) {
+      int before = maxTechnologyLevel.getOrDefault(order.playerId(), 1);
+      int after = Math.min(6, before + 1);
+      maxTechnologyLevel.put(order.playerId(), after);
+      log.add("Tech upgrade complete: " + order.playerId().displayName() + " advances from tech level "
+          + before + " to " + after + " for next turn.");
+    }
+  }
+
+  private UnitSelection takeUnits(TerritoryState source, int units) {
+    if (units <= 0 || units > source.units()) {
+      throw new IllegalArgumentException("That territory does not have enough units available.");
+    }
+    EnumMap<UnitLevel, Integer> selection = zeroUnitCounts();
+    int remaining = units;
+    for (int i = UnitLevel.values().length - 1; i >= 0 && remaining > 0; i--) {
+      UnitLevel level = UnitLevel.values()[i];
+      int available = source.unitCount(level);
+      if (available <= 0) {
+        continue;
+      }
+      int take = Math.min(available, remaining);
+      source.removeUnits(level, take);
+      selection.put(level, take);
+      remaining -= take;
+    }
+    return new UnitSelection(selection);
+  }
+
+  private EnumMap<UnitLevel, Integer> zeroUnitCounts() {
+    EnumMap<UnitLevel, Integer> result = new EnumMap<>(UnitLevel.class);
+    for (UnitLevel level : UnitLevel.values()) {
+      result.put(level, 0);
+    }
+    return result;
+  }
+
+  private EnumMap<UnitLevel, Integer> copyUnitCounts(Map<UnitLevel, Integer> counts) {
+    EnumMap<UnitLevel, Integer> copy = zeroUnitCounts();
+    if (counts != null) {
+      for (Map.Entry<UnitLevel, Integer> entry : counts.entrySet()) {
+        copy.put(entry.getKey(), Math.max(0, entry.getValue()));
+      }
+    }
+    return copy;
+  }
+
+  private int totalUnits(Map<UnitLevel, Integer> counts) {
+    return counts.values().stream().mapToInt(Integer::intValue).sum();
+  }
+
+  private UnitLevel pickUnit(Map<UnitLevel, Integer> counts, boolean highest) {
+    if (highest) {
+      for (int i = UnitLevel.values().length - 1; i >= 0; i--) {
+        UnitLevel level = UnitLevel.values()[i];
+        if (counts.getOrDefault(level, 0) > 0) {
+          return level;
+        }
+      }
+    } else {
+      for (UnitLevel level : UnitLevel.values()) {
+        if (counts.getOrDefault(level, 0) > 0) {
+          return level;
+        }
+      }
+    }
+    throw new IllegalArgumentException("No units available for combat.");
+  }
+
+  private String formatUnitBreakdown(Map<UnitLevel, Integer> counts) {
+    String text = java.util.Arrays.stream(UnitLevel.values())
+        .filter(level -> counts.getOrDefault(level, 0) > 0)
+        .map(level -> level.name() + " " + counts.getOrDefault(level, 0))
+        .collect(Collectors.joining(" | "));
+    return text.isBlank() ? "[none]" : "[" + text + "]";
+  }
+
+  private int techUpgradeCost(int currentLevel) {
+    return switch (currentLevel) {
+      case 1 -> 50;
+      case 2 -> 75;
+      case 3 -> 125;
+      case 4 -> 200;
+      case 5 -> 300;
+      default -> throw new IllegalArgumentException("Technology is already maxed out.");
+    };
+  }
+
+  private final class AttackGroup {
     private final PlayerId playerId;
     private final String target;
-    private int totalUnits;
+    private final EnumMap<UnitLevel, Integer> unitCounts = zeroUnitCounts();
     private final List<String> sources = new ArrayList<>();
 
     private AttackGroup(PlayerId playerId, String target) {
@@ -780,21 +926,46 @@ public final class GameEngine {
       this.target = target;
     }
 
-    private void addSource(String source, int units) {
-      totalUnits += units;
-      sources.add(source + " (" + units + ")");
+    private void addSource(String source, Map<UnitLevel, Integer> units) {
+      for (Map.Entry<UnitLevel, Integer> entry : units.entrySet()) {
+        unitCounts.merge(entry.getKey(), entry.getValue(), Integer::sum);
+      }
+      sources.add(source + " " + formatUnitBreakdown(units));
+    }
+
+    private PlayerId playerId() {
+      return playerId;
+    }
+
+    private Map<UnitLevel, Integer> unitCounts() {
+      return Map.copyOf(unitCounts);
+    }
+
+    private List<String> sources() {
+      return List.copyOf(sources);
+    }
+
+    private int totalUnits() {
+      return GameEngine.this.totalUnits(unitCounts);
     }
 
     private String summary() {
-      return playerId.displayName() + " from " + String.join(", ", sources) + " with " + totalUnits + " units";
+      return playerId.displayName() + " from " + String.join(", ", sources) + " with "
+          + totalUnits() + " units " + formatUnitBreakdown(unitCounts);
     }
   }
 
-  private record OrderCostSummary(int foodSpent, List<String> details) {}
+  private record UnitSelection(Map<UnitLevel, Integer> unitCounts) {
+    private int totalUnits() {
+      return unitCounts.values().stream().mapToInt(Integer::intValue).sum();
+    }
+  }
+
+  private record OrderCostSummary(int foodSpent, int technologySpent, List<String> details) {}
 
   private record CombatResult(
       boolean attackerWon,
-      int attackerUnitsRemaining,
-      int defenderUnitsRemaining,
+      Map<UnitLevel, Integer> attackerRemaining,
+      Map<UnitLevel, Integer> defenderRemaining,
       List<String> details) {}
 }

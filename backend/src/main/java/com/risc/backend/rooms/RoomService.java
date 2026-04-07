@@ -6,6 +6,7 @@ import com.risc.backend.game.OrderCommand;
 import com.risc.backend.game.OrderType;
 import com.risc.backend.game.PlayerId;
 import com.risc.backend.game.ResourceType;
+import com.risc.backend.game.UnitLevel;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.OrderRequest;
 import com.risc.backend.game.dto.PlacementRequest;
@@ -374,13 +375,26 @@ public class RoomService {
 
     private List<OrderCommand> toPlayerOrders(PlayerId playerId, List<OrderRequest> orders) {
       return orders.stream()
-          .map(order -> new OrderCommand(
-              OrderType.valueOf(order.type().trim().toUpperCase()),
-              order.source(),
-              order.target(),
-              order.units(),
-              playerId))
+          .map(order -> {
+            OrderType type = OrderType.valueOf(order.type().trim().toUpperCase(Locale.ROOT));
+            UnitLevel fromLevel = parseLevel(order.fromLevel());
+            UnitLevel toLevel = parseLevel(order.toLevel());
+            if (type == OrderType.UPGRADE_TECH) {
+              return OrderCommand.upgradeTech(playerId);
+            }
+            if (type == OrderType.UPGRADE_UNIT) {
+              return OrderCommand.upgradeUnit(order.source(), order.units(), playerId, fromLevel, toLevel);
+            }
+            return new OrderCommand(type, order.source(), order.target(), order.units(), playerId);
+          })
           .toList();
+    }
+
+    private UnitLevel parseLevel(String raw) {
+      if (raw == null || raw.isBlank()) {
+        return null;
+      }
+      return UnitLevel.valueOf(raw.trim().toUpperCase(Locale.ROOT));
     }
   }
 }

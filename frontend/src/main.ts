@@ -1,10 +1,11 @@
 import "./style.css";
 import { groupLogEntries } from "./logSections";
+import { canUpgradeUnit, techUpgradeCost, type UnitLevelName, unitLevels, unitUpgradeCost } from "./pj2Orders";
 import { summarizeTerritoryIntel } from "./territoryIntel";
 import { buildTurnSummary } from "./turnSummary";
 
 type Phase = "LOBBY" | "SETUP" | "ORDERS" | "GAME_OVER";
-type OrderType = "MOVE" | "ATTACK";
+type OrderType = "MOVE" | "ATTACK" | "UPGRADE_TECH" | "UPGRADE_UNIT";
 
 type Territory = {
   name: string;
@@ -49,9 +50,11 @@ type GameView = {
 
 type PlannedOrder = {
   type: OrderType;
-  source: string;
-  target: string;
+  source?: string | null;
+  target?: string | null;
   units: number;
+  fromLevel?: UnitLevelName | null;
+  toLevel?: UnitLevelName | null;
 };
 
 type Lang = "zh" | "en";
@@ -88,6 +91,8 @@ const uiText: Record<Lang, Record<string, string>> = {
     ordersHint: "点击地图上的领地来选择来源和目标。你可以用全部单位移动/进攻（领地可清空变无人占领）。",
     move: "移动",
     attack: "进攻",
+    upgradeTech: "升科技",
+    upgradeUnit: "升兵种",
     fullscreen: "全屏 (F)",
     source: "来源",
     target: "目标",
@@ -114,6 +119,7 @@ const uiText: Record<Lang, Record<string, string>> = {
     noTerritoryFocus: "选择或悬停一块领地以查看详细信息。",
     queuedAttacks: "已排队的进攻",
     noQueuedAttacks: "还没有排队的进攻。",
+    noQueuedOrders: "还没有排队的 PJ2 指令。",
     remove: "删除",
     movesApplyHint: "移动会在本地立即生效；进攻会在提交时一起结算。",
     turnChanges: "本回合变化",
@@ -158,6 +164,19 @@ const uiText: Record<Lang, Record<string, string>> = {
     moveNeedsPath: "移动到己方领地需要一条己方连通路径。",
     attackMustNotFriendly: "进攻目标必须是敌方或无人占领领地。",
     attackMustAdjacent: "进攻必须选择相邻领地。",
+    upgradeNeedSource: "升级单位前请先选择你的领地。",
+    upgradeNeedLevels: "请选择升级前后的单位等级。",
+    upgradeTechMaxed: "当前科技已到上限。",
+    upgradeTechQueued: "本回合已经排过一次科技升级。",
+    upgradeIllegal: "当前升级选择不合法，请检查科技等级、单位数量和升级方向。",
+    upgradeTechQueuedDone: "已排队科技升级。",
+    upgradedUnitQueued: "已排队单位升级 {units}：{source} {fromLevel} -> {toLevel}。",
+    fromLevel: "起始等级",
+    toLevel: "目标等级",
+    estimatedCost: "预计消耗",
+    techOnlyOnce: "每回合最多 1 次科技升级，下一回合生效。",
+    sourceForUpgrade: "升级领地",
+    territorySizeMap: "规模 S{size}",
     warOver: "战争结束。",
     turnResolved: "回合已结算，继续规划下一回合。",
     chooseOwnSource: "来源必须选择你自己的领地。",
@@ -198,6 +217,8 @@ const uiText: Record<Lang, Record<string, string>> = {
     ordersHint: "Click territories on the map to choose source and target. You may move/attack with all units (territories can become unoccupied).",
     move: "Move",
     attack: "Attack",
+    upgradeTech: "Tech Upgrade",
+    upgradeUnit: "Unit Upgrade",
     fullscreen: "Fullscreen (F)",
     source: "Source",
     target: "Target",
@@ -224,6 +245,7 @@ const uiText: Record<Lang, Record<string, string>> = {
     noTerritoryFocus: "Select or hover a territory to inspect its details.",
     queuedAttacks: "Queued Attacks",
     noQueuedAttacks: "No queued attacks yet.",
+    noQueuedOrders: "No queued PJ2 orders yet.",
     remove: "Remove",
     movesApplyHint: "Moves apply immediately in your browser. Attacks resolve together when you commit.",
     turnChanges: "Turn Changes",
@@ -268,6 +290,19 @@ const uiText: Record<Lang, Record<string, string>> = {
     moveNeedsPath: "Moves into owned territories need a friendly path.",
     attackMustNotFriendly: "Attack orders must target enemy or unoccupied territories.",
     attackMustAdjacent: "Attack orders must target adjacent territories.",
+    upgradeNeedSource: "Choose one of your territories before upgrading units.",
+    upgradeNeedLevels: "Choose both the current and target unit levels.",
+    upgradeTechMaxed: "Technology is already maxed out.",
+    upgradeTechQueued: "A tech upgrade is already queued this turn.",
+    upgradeIllegal: "That upgrade is not legal with the current tech level, unit counts, or direction.",
+    upgradeTechQueuedDone: "Queued a technology upgrade.",
+    upgradedUnitQueued: "Queued unit upgrade {units}: {source} {fromLevel} -> {toLevel}.",
+    fromLevel: "From level",
+    toLevel: "To level",
+    estimatedCost: "Estimated cost",
+    techOnlyOnce: "At most one tech upgrade per turn. It completes next turn.",
+    sourceForUpgrade: "Upgrade territory",
+    territorySizeMap: "Size S{size}",
     warOver: "The war is over.",
     turnResolved: "Turn resolved. Plan your next move.",
     chooseOwnSource: "Choose one of your territories as the source.",
@@ -310,12 +345,15 @@ let setupAbandoned: Record<string, boolean> = {};
 let setupSubmitted = false;
 let plannedMoves: PlannedOrder[] = [];
 let plannedAttacks: PlannedOrder[] = [];
+let plannedUpgrades: PlannedOrder[] = [];
 let boardTerritories: Territory[] = [];
 let planningTurnNumber: number | null = null;
 let selectedSource: string | null = null;
 let selectedTarget: string | null = null;
 let selectedMode: OrderType = "MOVE";
 let selectedUnits = 1;
+let selectedFromLevel: UnitLevelName = "BASIC";
+let selectedToLevel: UnitLevelName = "LEVEL_1";
 let message = "";
 let cursorIndex = 0;
 let roomId: string | null = localStorage.getItem("risc_room_id");
@@ -452,6 +490,44 @@ function hasFriendlyPath(sourceName: string, targetName: string): boolean {
   return false;
 }
 
+function shortestFriendlyPathSize(sourceName: string, targetName: string): number | null {
+  if (sourceName === targetName) {
+    return 0;
+  }
+  const territories = activeTerritories();
+  const byName = new Map(territories.map((territory) => [territory.name, territory]));
+  const player = localPlayerId();
+  const queue: Array<{ territory: string; cost: number }> = [{ territory: sourceName, cost: 0 }];
+  const best = new Map<string, number>([[sourceName, 0]]);
+  while (queue.length > 0) {
+    queue.sort((left, right) => left.cost - right.cost);
+    const current = queue.shift()!;
+    if (current.cost > (best.get(current.territory) ?? Number.MAX_SAFE_INTEGER)) {
+      continue;
+    }
+    const territory = byName.get(current.territory);
+    if (!territory) {
+      continue;
+    }
+    for (const neighborName of territory.neighbors) {
+      const neighbor = byName.get(neighborName);
+      if (!neighbor || neighbor.owner !== player) {
+        continue;
+      }
+      const nextCost = current.cost + neighbor.size;
+      if (nextCost >= (best.get(neighborName) ?? Number.MAX_SAFE_INTEGER)) {
+        continue;
+      }
+      if (neighborName === targetName) {
+        return nextCost;
+      }
+      best.set(neighborName, nextCost);
+      queue.push({ territory: neighborName, cost: nextCost });
+    }
+  }
+  return null;
+}
+
 function availableFromSource(name: string): number {
   const territory = territoryByName(name);
   if (!territory) {
@@ -461,6 +537,79 @@ function availableFromSource(name: string): number {
     .filter((order) => order.source === name)
     .reduce((sum, order) => sum + order.units, 0);
   return Math.max(0, territory.units - reservedForAttacks);
+}
+
+function availableUnitsForUpgrade(name: string, level: UnitLevelName): number {
+  const territory = territoryByName(name);
+  if (!territory) {
+    return 0;
+  }
+  const reserved = plannedUpgrades
+    .filter((order) => order.type === "UPGRADE_UNIT" && order.source === name && order.fromLevel === level)
+    .reduce((sum, order) => sum + order.units, 0);
+  return Math.max(0, (territory.unitCounts[level] ?? 0) - reserved);
+}
+
+function plannedOrderCount(): number {
+  return plannedMoves.length + plannedAttacks.length + plannedUpgrades.length;
+}
+
+function plannedCostTotals(): { food: number; technology: number } {
+  let food = 0;
+  let technology = 0;
+  for (const order of plannedMoves) {
+    if (!order.source || !order.target) {
+      continue;
+    }
+    const source = territoryByName(order.source);
+    const target = territoryByName(order.target);
+    if (!source || !target) {
+      continue;
+    }
+    if (target.owner === null) {
+      food += target.size * order.units;
+    } else {
+      food += (shortestFriendlyPathSize(order.source, order.target) ?? 0) * order.units;
+    }
+  }
+  for (const order of plannedAttacks) {
+    food += order.units;
+  }
+  const player = localPlayer();
+  let previewTechLevel = player?.maxTechnologyLevel ?? 1;
+  for (const order of plannedUpgrades) {
+    if (order.type === "UPGRADE_TECH") {
+      technology += techUpgradeCost(previewTechLevel) ?? 0;
+    } else if (order.type === "UPGRADE_UNIT" && order.fromLevel && order.toLevel) {
+      technology += unitUpgradeCost(order.fromLevel, order.toLevel, order.units);
+    }
+  }
+  return { food, technology };
+}
+
+function currentSelectionCost(): { food: number; technology: number } {
+  if (selectedMode === "ATTACK") {
+    return { food: selectedUnits, technology: 0 };
+  }
+  if (selectedMode === "MOVE" && selectedSource && selectedTarget) {
+    const source = territoryByName(selectedSource);
+    const target = territoryByName(selectedTarget);
+    if (!source || !target) {
+      return { food: 0, technology: 0 };
+    }
+    if (target.owner === null) {
+      return { food: target.size * selectedUnits, technology: 0 };
+    }
+    const size = shortestFriendlyPathSize(selectedSource, selectedTarget) ?? 0;
+    return { food: size * selectedUnits, technology: 0 };
+  }
+  if (selectedMode === "UPGRADE_TECH") {
+    return { food: 0, technology: techUpgradeCost(localPlayer()?.maxTechnologyLevel ?? 1) ?? 0 };
+  }
+  if (selectedMode === "UPGRADE_UNIT") {
+    return { food: 0, technology: unitUpgradeCost(selectedFromLevel, selectedToLevel, selectedUnits) };
+  }
+  return { food: 0, technology: 0 };
 }
 
 function setupLeft(): number {
@@ -533,6 +682,7 @@ function syncPlanningState(): void {
     boardTerritories = [];
     plannedMoves = [];
     plannedAttacks = [];
+    plannedUpgrades = [];
     planningTurnNumber = null;
     return;
   }
@@ -540,10 +690,13 @@ function syncPlanningState(): void {
   if (planningTurnNumber !== game.turnNumber) {
     plannedMoves = [];
     plannedAttacks = [];
+    plannedUpgrades = [];
     planningTurnNumber = game.turnNumber;
     selectedSource = null;
     selectedTarget = null;
     selectedUnits = 1;
+    selectedFromLevel = "BASIC";
+    selectedToLevel = "LEVEL_1";
   }
 
   boardTerritories = game.territories.map((territory) => ({
@@ -580,12 +733,15 @@ async function resetGame(): Promise<void> {
   }
   plannedMoves = [];
   plannedAttacks = [];
+  plannedUpgrades = [];
   boardTerritories = [];
   planningTurnNumber = null;
   setupAbandoned = {};
   selectedSource = null;
   selectedTarget = null;
   selectedUnits = 1;
+  selectedFromLevel = "BASIC";
+  selectedToLevel = "LEVEL_1";
   setMessage("");
   initializeSetupAllocations();
   syncPlanningState();
@@ -615,11 +771,14 @@ async function commitSetup(): Promise<void> {
     setupSubmitted = true;
     plannedMoves = [];
     plannedAttacks = [];
+    plannedUpgrades = [];
     boardTerritories = [];
     planningTurnNumber = null;
     selectedSource = null;
     selectedTarget = null;
     selectedUnits = 1;
+    selectedFromLevel = "BASIC";
+    selectedToLevel = "LEVEL_1";
     syncPlanningState();
     if (roomId && roomToken && game.phase === "SETUP" && game.waitingOnPlayers.length > 0) {
       setMessage(t("setupWaiting", { waiting: game.waitingOnPlayers.join(", ") }));
@@ -632,6 +791,62 @@ async function commitSetup(): Promise<void> {
 }
 
 function queueOrder(): void {
+  if (selectedMode === "UPGRADE_TECH") {
+    const player = localPlayer();
+    if (!player) {
+      return;
+    }
+    if (plannedUpgrades.some((order) => order.type === "UPGRADE_TECH")) {
+      setMessage(t("upgradeTechQueued"));
+      return;
+    }
+    if (techUpgradeCost(player.maxTechnologyLevel) == null) {
+      setMessage(t("upgradeTechMaxed"));
+      return;
+    }
+    plannedUpgrades = [...plannedUpgrades, { type: "UPGRADE_TECH", units: 1 }];
+    setMessage(t("upgradeTechQueuedDone"));
+    render();
+    return;
+  }
+
+  if (selectedMode === "UPGRADE_UNIT") {
+    if (!selectedSource) {
+      setMessage(t("upgradeNeedSource"));
+      return;
+    }
+    if (!selectedFromLevel || !selectedToLevel) {
+      setMessage(t("upgradeNeedLevels"));
+      return;
+    }
+    const player = localPlayer();
+    if (!player) {
+      return;
+    }
+    const available = availableUnitsForUpgrade(selectedSource, selectedFromLevel);
+    if (!canUpgradeUnit(player.maxTechnologyLevel, selectedFromLevel, selectedToLevel, available, selectedUnits)) {
+      setMessage(t("upgradeIllegal"));
+      return;
+    }
+    plannedUpgrades = [...plannedUpgrades, {
+      type: "UPGRADE_UNIT",
+      source: selectedSource,
+      units: selectedUnits,
+      fromLevel: selectedFromLevel,
+      toLevel: selectedToLevel
+    }];
+    setMessage(t("upgradedUnitQueued", {
+      units: selectedUnits,
+      source: selectedSource,
+      fromLevel: selectedFromLevel,
+      toLevel: selectedToLevel
+    }));
+    selectedSource = null;
+    selectedUnits = 1;
+    render();
+    return;
+  }
+
   if (!selectedSource || !selectedTarget) {
     setMessage(t("chooseSourceAndTarget"));
     return;
@@ -686,11 +901,13 @@ function queueOrder(): void {
 async function commitTurn(): Promise<void> {
   try {
     const payload = JSON.stringify({
-      orders: [...plannedMoves, ...plannedAttacks].map((order) => ({
+      orders: [...plannedMoves, ...plannedAttacks, ...plannedUpgrades].map((order) => ({
         type: order.type,
-        source: order.source,
-        target: order.target,
-        units: order.units
+        source: order.source ?? null,
+        target: order.target ?? null,
+        units: order.units,
+        fromLevel: order.fromLevel ?? null,
+        toLevel: order.toLevel ?? null
       }))
     });
     if (roomId && roomToken) {
@@ -700,11 +917,14 @@ async function commitTurn(): Promise<void> {
     }
     plannedMoves = [];
     plannedAttacks = [];
+    plannedUpgrades = [];
     boardTerritories = [];
     planningTurnNumber = null;
     selectedUnits = 1;
     selectedSource = null;
     selectedTarget = null;
+    selectedFromLevel = "BASIC";
+    selectedToLevel = "LEVEL_1";
     syncPlanningState();
     if (game.phase === "GAME_OVER") {
       setMessage(t("warOver"));
@@ -784,6 +1004,27 @@ function onCanvasClick(event: MouseEvent, canvas: HTMLCanvasElement): void {
     return;
   }
   cursorIndex = activeTerritories().findIndex((territory) => territory.name === clicked.name);
+  if (selectedMode === "UPGRADE_TECH") {
+    return;
+  }
+  if (selectedMode === "UPGRADE_UNIT") {
+    if (clicked.owner !== localPlayerId()) {
+      setMessage(t("upgradeNeedSource"));
+      return;
+    }
+    if (clicked.name === selectedSource) {
+      selectedSource = null;
+      setMessage(t("sourceCleared"));
+      render();
+      return;
+    }
+    selectedSource = clicked.name;
+    selectedTarget = null;
+    selectedUnits = 1;
+    setMessage(t("sourceSelected", { name: clicked.name }));
+    render();
+    return;
+  }
   if (!selectedSource) {
     if (clicked.owner !== localPlayerId()) {
       setMessage(t("chooseOwnSource"));
@@ -891,8 +1132,10 @@ function drawBoard(canvas: HTMLCanvasElement): void {
       context.textAlign = "center";
       context.font = "bold 20px Georgia";
       context.fillText(territory.name, center.x, center.y - 8);
+      context.font = "12px Georgia";
+      context.fillText(t("territorySizeMap", { size: territory.size }), center.x, center.y + 8);
       context.font = "bold 24px Georgia";
-      context.fillText(territory.hidden ? "?" : String(territory.units), center.x, center.y + 24);
+      context.fillText(territory.hidden ? "?" : String(territory.units), center.x, center.y + 30);
     } else {
       context.beginPath();
       context.arc(territory.x, territory.y, 43, 0, Math.PI * 2);
@@ -902,8 +1145,10 @@ function drawBoard(canvas: HTMLCanvasElement): void {
       context.textAlign = "center";
       context.font = "bold 19px Georgia";
       context.fillText(territory.name, territory.x, territory.y - 8);
+      context.font = "12px Georgia";
+      context.fillText(t("territorySizeMap", { size: territory.size }), territory.x, territory.y + 8);
       context.font = "bold 24px Georgia";
-      context.fillText(territory.hidden ? "?" : String(territory.units), territory.x, territory.y + 24);
+      context.fillText(territory.hidden ? "?" : String(territory.units), territory.x, territory.y + 30);
     }
   }
 
@@ -927,6 +1172,7 @@ function renderTextState(): string {
     note: game.mapNote,
     pendingMoves: plannedMoves,
     pendingAttacks: plannedAttacks,
+    pendingUpgrades: plannedUpgrades,
     selection: {
       source: selectedSource,
       target: selectedTarget,
@@ -1020,6 +1266,16 @@ function renderTurnSummary(entries: string[]): string {
       </div>
     `;
   }).join("");
+}
+
+function describeQueuedOrder(order: PlannedOrder): string {
+  if (order.type === "UPGRADE_TECH") {
+    return "UPGRADE_TECH";
+  }
+  if (order.type === "UPGRADE_UNIT") {
+    return `UPGRADE_UNIT ${order.units} in ${order.source} ${order.fromLevel} -> ${order.toLevel}`;
+  }
+  return `${order.type} ${order.units} from ${order.source} to ${order.target}`;
 }
 
 function formatResourceMap(resources: Record<string, number>): string {
@@ -1168,6 +1424,10 @@ function render(): void {
       </section>`
     : "";
 
+  const previewCost = currentSelectionCost();
+  const plannedCosts = plannedCostTotals();
+  const queuedOrders = [...plannedMoves, ...plannedAttacks, ...plannedUpgrades];
+
   app.innerHTML = `
     <div class="game-layout">
       <section class="panel topbar-panel">
@@ -1234,15 +1494,31 @@ function render(): void {
           <div class="buttons">
             <button class="${selectedMode === "MOVE" ? "" : "secondary"}" data-mode="MOVE">${t("move")}</button>
             <button class="${selectedMode === "ATTACK" ? "" : "secondary"}" data-mode="ATTACK">${t("attack")}</button>
+            <button class="${selectedMode === "UPGRADE_UNIT" ? "" : "secondary"}" data-mode="UPGRADE_UNIT">${t("upgradeUnit")}</button>
+            <button class="${selectedMode === "UPGRADE_TECH" ? "" : "secondary"}" data-mode="UPGRADE_TECH">${t("upgradeTech")}</button>
           </div>
           <div class="field-grid">
             <div class="selection-card">
               <strong>${t("currentSelection")}</strong>
               <span>${t("source")}: ${selectedSource ?? t("none")}</span>
               <span>${t("target")}: ${selectedTarget ?? t("none")}</span>
+              <span>${t("estimatedCost")}: FOOD ${plannedCosts.food + previewCost.food} • TECHNOLOGY ${plannedCosts.technology + previewCost.technology}</span>
             </div>
             <label class="units-field">${t("units")}<input id="units-input" type="number" min="1" value="${selectedUnits}" /></label>
           </div>
+          <div class="upgrade-grid">
+            <label>${t("fromLevel")}
+              <select id="from-level">
+                ${unitLevels.map((level) => `<option value="${level}" ${selectedFromLevel === level ? "selected" : ""}>${level}</option>`).join("")}
+              </select>
+            </label>
+            <label>${t("toLevel")}
+              <select id="to-level">
+                ${unitLevels.map((level) => `<option value="${level}" ${selectedToLevel === level ? "selected" : ""}>${level}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          <div class="hint">${t("techOnlyOnce")}</div>
           <div class="buttons">
             <button id="queue-order" ${game.phase !== "ORDERS" ? "disabled" : ""}>${t("queueOrder")}</button>
             <button class="secondary" id="clear-orders">${t("clearOrders")}</button>
@@ -1260,7 +1536,7 @@ function render(): void {
               <strong>${game.phase === "GAME_OVER" ? t("winnerWins", { winner: game.winner ?? "" }) : t("battleMap")}</strong>
               <div class="hint">${game.mapNote}</div>
             </div>
-            <div class="hint">${t("pendingActions", { count: plannedMoves.length + plannedAttacks.length })}</div>
+            <div class="hint">${t("pendingActions", { count: plannedOrderCount() })}</div>
           </div>
           <canvas id="game-canvas" aria-label="RISC game board"></canvas>
         </section>
@@ -1271,12 +1547,12 @@ function render(): void {
             <div class="hint">${t("movesApplyHint")}</div>
           </div>
           <div class="log queued-log" data-scroll-key="queued-log">
-            ${plannedAttacks.length === 0
-              ? `<div class="log-entry">${t("noQueuedAttacks")}</div>`
-              : plannedAttacks.map((order, index) => `
+            ${queuedOrders.length === 0
+              ? `<div class="log-entry">${t("noQueuedOrders")}</div>`
+              : queuedOrders.map((order, index) => `
                 <div class="log-entry log-entry-inline">
-                  <span>ATTACK ${order.units} from ${order.source} to ${order.target}</span>
-                  <button class="secondary" data-attack-remove="${index}">${t("remove")}</button>
+                  <span>${describeQueuedOrder(order)}</span>
+                  <button class="secondary" data-order-remove="${index}">${t("remove")}</button>
                 </div>`).join("")}
           </div>
         </section>
@@ -1336,6 +1612,12 @@ function render(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.onclick = () => {
       selectedMode = button.dataset.mode as OrderType;
+      if (selectedMode === "UPGRADE_TECH") {
+        selectedSource = null;
+        selectedTarget = null;
+      } else if (selectedMode === "UPGRADE_UNIT") {
+        selectedTarget = null;
+      }
       render();
     };
   });
@@ -1372,6 +1654,23 @@ function render(): void {
   if (unitsInput) {
     unitsInput.oninput = () => {
       selectedUnits = Math.max(1, Number(unitsInput.value) || 1);
+      render();
+    };
+  }
+
+  const fromLevelInput = document.querySelector<HTMLSelectElement>("#from-level");
+  if (fromLevelInput) {
+    fromLevelInput.onchange = () => {
+      selectedFromLevel = fromLevelInput.value as UnitLevelName;
+      render();
+    };
+  }
+
+  const toLevelInput = document.querySelector<HTMLSelectElement>("#to-level");
+  if (toLevelInput) {
+    toLevelInput.onchange = () => {
+      selectedToLevel = toLevelInput.value as UnitLevelName;
+      render();
     };
   }
 
@@ -1392,19 +1691,24 @@ function render(): void {
     clearButton.onclick = () => {
       plannedMoves = [];
       plannedAttacks = [];
+      plannedUpgrades = [];
       syncPlanningState();
       selectedUnits = 1;
       setMessage(t("clearedPlanned"));
     };
   }
 
-  document.querySelectorAll<HTMLButtonElement>("[data-attack-remove]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>("[data-order-remove]").forEach((button) => {
     button.onclick = () => {
-      const index = Number(button.dataset.attackRemove ?? "-1");
+      const index = Number(button.dataset.orderRemove ?? "-1");
       if (Number.isNaN(index) || index < 0) {
         return;
       }
-      plannedAttacks = plannedAttacks.filter((_, i) => i !== index);
+      const queuedOrders = [...plannedMoves, ...plannedAttacks, ...plannedUpgrades];
+      const next = queuedOrders.filter((_, i) => i !== index);
+      plannedMoves = next.filter((order) => order.type === "MOVE");
+      plannedAttacks = next.filter((order) => order.type === "ATTACK");
+      plannedUpgrades = next.filter((order) => order.type === "UPGRADE_TECH" || order.type === "UPGRADE_UNIT");
       setMessage(t("removedAttack"));
       render();
     };
@@ -1517,7 +1821,7 @@ window.addEventListener("keydown", (event) => {
       queueOrder();
       return;
     }
-    if (game.phase === "ORDERS" && (plannedMoves.length + plannedAttacks.length) > 0) {
+    if (game.phase === "ORDERS" && plannedOrderCount() > 0) {
       void commitTurn();
     }
   }
@@ -1528,6 +1832,24 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     const territory = cursorTerritory();
     if (!territory) {
+      return;
+    }
+    if (selectedMode === "UPGRADE_TECH") {
+      return;
+    }
+    if (selectedMode === "UPGRADE_UNIT") {
+      if (territory.owner !== localPlayerId()) {
+        setMessage(t("upgradeNeedSource"));
+        return;
+      }
+      if (territory.name === selectedSource) {
+        selectedSource = null;
+        setMessage(t("selectionCleared"));
+      } else {
+        selectedSource = territory.name;
+        setMessage(t("sourceSelectedCursor", { name: territory.name }));
+      }
+      render();
       return;
     }
     if (!selectedSource) {
@@ -1614,6 +1936,7 @@ function leaveRoom(): void {
   stopPolling();
   plannedMoves = [];
   plannedAttacks = [];
+  plannedUpgrades = [];
   boardTerritories = [];
   planningTurnNumber = null;
   setupAllocations = {};
@@ -1647,6 +1970,7 @@ async function startGame(): Promise<void> {
     game = await api<GameView>(`/api/rooms/${roomId}/start`, { method: "POST" });
     plannedMoves = [];
     plannedAttacks = [];
+    plannedUpgrades = [];
     boardTerritories = [];
     planningTurnNumber = null;
     selectedSource = null;
