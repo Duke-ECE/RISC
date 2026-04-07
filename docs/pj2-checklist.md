@@ -9,8 +9,8 @@
 
 ## Current Status Snapshot
 
-- 已完成：Phase 1-7 的本轮主路径，其中包括 backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示、对应单元测试与浏览器 smoke。
-- 进行中：补更多 Phase 5 边界测试与整理 Phase 0 影响面映射。
+- 已完成：Phase 0-7，其中包括需求影响面映射、backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示、对应单元测试与浏览器 smoke。
+- 进行中：Phase 8 账号与多局返回。
 - 未完成：Phase 8 账号与多局返回、Phase 9 非代码交付物。
 - 当前实现假设：`MOVE` / `ATTACK` 订单未额外让玩家选择出发单位等级时，server 默认优先调度高等级单位，并在 turn log 中输出实际分级明细。
 - 本轮 smoke 产物：`output/playwright/pj2-smoke.png`、`output/playwright/pj2-smoke-state.json`
@@ -22,6 +22,19 @@
 - 每完成一个任务就单独 commit，避免把多个需求混在一起。
 - 前端交互改动需要补浏览器 smoke/debug；优先使用 `playwright` CLI。
 - 不在前端先“伪实现”规则。规则先落后端，再接 UI。
+
+## Requirement Impact Map
+
+| PJ2 Requirement | Backend Impact | Frontend Impact | Test Impact |
+| --- | --- | --- | --- |
+| Territory `size` | `TerritoryDefinition` / `GameView` / move path pricing | map label, territory intel | backend model tests, frontend render tests, browser smoke |
+| Resource production and totals | territory production, per-player totals, end-of-turn income | territory intel, player resource panel | backend income tests, browser smoke |
+| `food` move/attack cost | server-side order validation and spend log | estimated cost preview, server error display | backend cost tests |
+| `technology` upgrades | `UPGRADE_TECH`, `UPGRADE_UNIT`, tech caps, delayed completion | upgrade forms, local legality hints, queued order UX | backend upgrade tests, frontend unit tests, browser smoke |
+| Mixed-level combat bonuses | leveled unit storage, combat pairing, multi-source aggregation | combat/result logs, unit breakdown visibility | backend combat tests |
+| GUI map visibility | DTO fields for owner / units / resources / size / neighbors | canvas labels, side panels, queued actions | frontend tests, browser smoke |
+| Login + game return | account/session model, room membership lookup, multi-game listing | auth flow, active game switcher | backend auth/integration tests, browser smoke |
+| Non-code deliverables | n/a | prototype and UX docs may mirror implemented screens | document review only |
 
 ## Playwright Debug Loop
 
@@ -52,7 +65,7 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 - [x] 读取 `pj1` / `pj2` 需求并形成差异分析
 - [x] 建立逐步实现文档
-- [ ] 把每个需求映射到 backend/frontend/test 影响面
+- [x] 把每个需求映射到 backend/frontend/test 影响面
 
 测试要求：
 
@@ -148,8 +161,8 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 - [x] 后端测试：不同 level 单位 bonus 生效
 - [x] 后端测试：配对顺序符合 pj2 规则
-- [ ] 后端测试：多来源合并攻击后仍按单位等级正确结算
-- [ ] 后端测试：多方攻击同一地与新 bonus 规则兼容
+- [x] 后端测试：多来源合并攻击后仍按单位等级正确结算
+- [x] 后端测试：多方攻击同一地与新 bonus 规则兼容
 
 完成定义：
 

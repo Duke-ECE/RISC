@@ -98,10 +98,72 @@ class GameEngineUpgradeCombatTest {
     assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("A BASIC (2+0=2) vs D LEVEL_1 (2+1=3)")));
   }
 
+  @Test
+  void multiSourceAttackCombinesLeveledUnitsIntoOneForce() {
+    GameEngine engine = preparedEngine(multiSourceCombatMap(), new FixedRandom(19, 0, 19, 0));
+
+    engine.resolveCommittedTurn(List.of());
+    engine.resolveCommittedTurn(List.of(
+        OrderCommand.upgradeUnit("G1", 1, PlayerId.GREEN, UnitLevel.BASIC, UnitLevel.LEVEL_1),
+        OrderCommand.upgradeUnit("G2", 1, PlayerId.GREEN, UnitLevel.BASIC, UnitLevel.LEVEL_1),
+        new OrderCommand(OrderType.ATTACK, "G1", "B1", 1, PlayerId.GREEN),
+        new OrderCommand(OrderType.ATTACK, "G2", "B1", 1, PlayerId.GREEN)));
+
+    GameView view = engine.view(PlayerId.GREEN, "ROOM1", List.of());
+    Map<String, Integer> b1UnitCounts = view.territories().stream()
+        .filter(territory -> territory.name().equals("B1"))
+        .findFirst()
+        .orElseThrow()
+        .unitCounts();
+
+    assertEquals(PlayerId.GREEN.name(), view.territories().stream()
+        .filter(territory -> territory.name().equals("B1"))
+        .findFirst()
+        .orElseThrow()
+        .owner());
+    assertEquals(2, b1UnitCounts.get(UnitLevel.LEVEL_1.name()));
+    assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("G1 [LEVEL_1 1], G2 [LEVEL_1 1] with 2 units [LEVEL_1 2]")));
+  }
+
+  @Test
+  void multipleAttackersSameTargetStillUseLeveledCombatResolution() {
+    GameEngine engine = preparedThreePlayerEngine(multiAttackerCombatMap(), new FixedRandom(
+        1,
+        19, 0,
+        0, 19));
+
+    engine.resolveCommittedTurn(List.of());
+    engine.resolveCommittedTurn(List.of(
+        OrderCommand.upgradeUnit("G1", 1, PlayerId.GREEN, UnitLevel.BASIC, UnitLevel.LEVEL_1),
+        new OrderCommand(OrderType.ATTACK, "G1", "R1", 2, PlayerId.GREEN),
+        new OrderCommand(OrderType.ATTACK, "B1", "R1", 1, PlayerId.BLUE)));
+
+    GameView view = engine.view(PlayerId.GREEN, "ROOM1", List.of());
+    var r1 = view.territories().stream()
+        .filter(territory -> territory.name().equals("R1"))
+        .findFirst()
+        .orElseThrow();
+
+    assertEquals(PlayerId.GREEN.name(), r1.owner());
+    assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("Battle queue at R1")));
+    assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("Green from G1 [BASIC 1 | LEVEL_1 1] with 2 units [BASIC 1 | LEVEL_1 1]")));
+    assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("Blue from B1 [BASIC 1] with 1 units [BASIC 1]")));
+    assertTrue(view.lastLog().stream().anyMatch(line -> line.contains("A LEVEL_1 (20+1=21) vs D BASIC (1+0=1)")));
+  }
+
   private GameEngine preparedEngine(List<TerritoryDefinition> map, Random random) {
     GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE), map, random);
     engine.commitPlacement(PlayerId.GREEN, Map.of("G1", 9), List.of());
     engine.commitPlacement(PlayerId.BLUE, Map.of("B1", 9), List.of());
+    engine.startOrdersPhase(List.of("Orders phase"));
+    return engine;
+  }
+
+  private GameEngine preparedThreePlayerEngine(List<TerritoryDefinition> map, Random random) {
+    GameEngine engine = new GameEngine(List.of(PlayerId.GREEN, PlayerId.BLUE, PlayerId.RED), map, random);
+    engine.commitPlacement(PlayerId.GREEN, Map.of("G1", 9), List.of());
+    engine.commitPlacement(PlayerId.BLUE, Map.of("B1", 9), List.of());
+    engine.commitPlacement(PlayerId.RED, Map.of("R1", 0, "R2", 9), List.of());
     engine.startOrdersPhase(List.of("Orders phase"));
     return engine;
   }
@@ -126,6 +188,22 @@ class GameEngineUpgradeCombatTest {
     return List.of(
         territory("G1", PlayerId.GREEN, 1, 10, 10, List.of("B1")),
         territory("B1", PlayerId.BLUE, 1, 10, 10, List.of("G1")));
+  }
+
+  private List<TerritoryDefinition> multiSourceCombatMap() {
+    return List.of(
+        territory("G1", PlayerId.GREEN, 1, 10, 10, List.of("B1")),
+        territory("G2", PlayerId.GREEN, 1, 10, 10, List.of("B1")),
+        territory("B1", PlayerId.BLUE, 1, 0, 0, List.of("G1", "G2")),
+        territory("B2", PlayerId.BLUE, 1, 0, 0, List.of()));
+  }
+
+  private List<TerritoryDefinition> multiAttackerCombatMap() {
+    return List.of(
+        territory("G1", PlayerId.GREEN, 1, 10, 10, List.of("R1")),
+        territory("B1", PlayerId.BLUE, 1, 10, 10, List.of("R1")),
+        territory("R1", PlayerId.RED, 1, 0, 0, List.of("G1", "B1")),
+        territory("R2", PlayerId.RED, 1, 0, 0, List.of()));
   }
 
   private TerritoryDefinition territory(
