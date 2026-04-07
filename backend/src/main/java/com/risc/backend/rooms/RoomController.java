@@ -1,9 +1,12 @@
 package com.risc.backend.rooms;
 
+import com.risc.backend.auth.AuthService;
+import com.risc.backend.auth.ActiveGameView;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.PlacementRequest;
 import com.risc.backend.game.dto.TurnRequest;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -21,22 +24,36 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/api/rooms")
 public class RoomController {
-  private static final String TOKEN_HEADER = "X-Player-Token";
+  private static final String TOKEN_HEADER = "X-Auth-Token";
 
   private final RoomService roomService;
+  private final AuthService authService;
 
-  public RoomController(RoomService roomService) {
+  public RoomController(RoomService roomService, AuthService authService) {
     this.roomService = roomService;
+    this.authService = authService;
   }
 
   @PostMapping
-  public RoomJoinResponse createRoom() {
-    return roomService.createRoom();
+  public RoomJoinResponse createRoom(
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.createRoom(resolveAccount(tokenHeader, tokenQuery));
   }
 
   @PostMapping("/{roomId}/join")
-  public RoomJoinResponse joinRoom(@PathVariable String roomId) {
-    return roomService.joinRoom(roomId);
+  public RoomJoinResponse joinRoom(
+      @PathVariable String roomId,
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.joinRoom(roomId, resolveAccount(tokenHeader, tokenQuery));
+  }
+
+  @GetMapping
+  public List<ActiveGameView> listGames(
+      @RequestHeader(value = TOKEN_HEADER, required = false) String tokenHeader,
+      @RequestParam(value = "token", required = false) String tokenQuery) {
+    return roomService.listGamesFor(resolveAccount(tokenHeader, tokenQuery));
   }
 
   @GetMapping("/{roomId}")
@@ -109,12 +126,16 @@ public class RoomController {
   }
 
   private String resolveToken(String tokenHeader, String tokenQuery) {
+    return resolveAccount(tokenHeader, tokenQuery);
+  }
+
+  private String resolveAccount(String tokenHeader, String tokenQuery) {
     if (tokenHeader != null && !tokenHeader.isBlank()) {
-      return tokenHeader;
+      return authService.requireUsername(tokenHeader);
     }
     if (tokenQuery != null && !tokenQuery.isBlank()) {
-      return tokenQuery;
+      return authService.requireUsername(tokenQuery);
     }
-    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing player token.");
+    throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing auth token.");
   }
 }

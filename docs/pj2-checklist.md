@@ -9,11 +9,11 @@
 
 ## Current Status Snapshot
 
-- 已完成：Phase 0-7，其中包括需求影响面映射、backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示、对应单元测试与浏览器 smoke。
-- 进行中：Phase 8 账号与多局返回。
-- 未完成：Phase 8 账号与多局返回、Phase 9 非代码交付物。
+- 已完成：Phase 0-8，其中包括需求影响面映射、backend `UPGRADE_TECH` / 单位升级 / PJ2 combat v2、frontend size 展示、升级 UI、预计资源消耗、本地非法升级提示，以及账号登录、多局列表与切换、对应单元测试与浏览器 smoke。
+- 进行中：Phase 9 非代码交付物。
+- 未完成：Phase 9 非代码交付物。
 - 当前实现假设：`MOVE` / `ATTACK` 订单未额外让玩家选择出发单位等级时，server 默认优先调度高等级单位，并在 turn log 中输出实际分级明细。
-- 本轮 smoke 产物：`output/playwright/pj2-smoke.png`、`output/playwright/pj2-smoke-state.json`
+- 本轮 smoke 产物：`output/playwright/pj2-smoke.png`、`output/playwright/pj2-smoke-state.json`、`output/playwright/pj2-phase8-switch.png`、`output/playwright/pj2-phase8-switch-state.json`
 
 ## Working Rules
 
@@ -203,21 +203,21 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ### Phase 8: Accounts and game return
 
-- [ ] 引入 `login + password`
-- [ ] 玩家可以重新登录并回到历史 game
-- [ ] 一个玩家可加入多个 game
-- [ ] 前端可列出并切换 active games
+- [x] 引入 `login + password`
+- [x] 玩家可以重新登录并回到历史 game
+- [x] 一个玩家可加入多个 game
+- [x] 前端可列出并切换 active games
 
 测试要求：
 
-- 后端集成测试：注册/登录/鉴权
-- 后端集成测试：同账号返回已有游戏
-- 后端集成测试：同账号加入多个房间
-- `playwright` smoke：登录后切换不同房间
+- [x] 后端集成测试：注册/登录/鉴权
+- [x] 后端集成测试：同账号返回已有游戏
+- [x] 后端集成测试：同账号加入多个房间
+- [x] `playwright` smoke：登录后切换不同房间
 
 完成定义：
 
-- 不再依赖一次性 room token 作为长期身份
+- [x] 不再依赖一次性 room token 作为长期身份
 
 ### Phase 9: Non-code deliverables
 
@@ -247,8 +247,8 @@ export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
 
 ## Immediate Next Task
 
-下一步建议做 `Phase 8: Accounts and game return`，原因：
+下一步建议做 `Phase 9: Non-code deliverables`，原因：
 
-- Phase 1-7 的 PJ2 主玩法已经具备端到端闭环
-- 当前最大剩余需求已经从“规则未实现”转成“身份与多局返回”
-- 若继续推进，可以把一次性 room token 身份升级成可回到历史 game 的账号体系
+- Phase 1-8 的代码功能已经具备端到端闭环
+- 剩余差距主要在原型、UX 对照、会议说明与 UML/architecture 文档
+- 这一阶段适合以文档和交付物为主，避免把源码任务和课程材料混在同一个 commit

@@ -33,6 +33,15 @@ type Player = {
   resources: Record<string, number>;
 };
 
+type ActiveGame = {
+  roomId: string;
+  playerId: string;
+  phase: Phase;
+  turnNumber: number;
+  seatCount: number;
+  winner: string | null;
+};
+
 type GameView = {
   phase: Phase;
   currentPlayer: string;
@@ -46,6 +55,12 @@ type GameView = {
   seatCount: number;
   roomId: string | null;
   waitingOnPlayers: string[];
+};
+
+type AuthResponse = {
+  username: string;
+  token: string;
+  activeGames: ActiveGame[];
 };
 
 type PlannedOrder = {
@@ -68,6 +83,11 @@ if (!appRoot) {
 const app = appRoot;
 
 let lang: Lang = localStorage.getItem("risc_lang") === "en" ? "en" : "zh";
+let authToken: string | null = localStorage.getItem("risc_auth_token");
+let authUsername: string | null = localStorage.getItem("risc_auth_username");
+let activeGames: ActiveGame[] = [];
+let usernameInput = authUsername ?? "";
+let passwordInput = "";
 
 const uiText: Record<Lang, Record<string, string>> = {
   zh: {
@@ -76,10 +96,19 @@ const uiText: Record<Lang, Record<string, string>> = {
     english: "English",
     subtitle: "同时回合、隐藏提交，以及一张非常倔强的幻想大陆地图。",
     createRoom: "创建房间",
+    login: "登录",
+    register: "注册",
+    logout: "退出登录",
+    username: "用户名",
+    password: "密码",
+    authHint: "先登录账号，之后可以回到你参与过的房间。",
     join: "加入",
     roomIdPlaceholder: "房间号 (例如 ABC123)",
     tipJoin: "提示：开新窗口输入同一个房间号即可加入。",
     multiplayer: "多人房间",
+    activeGames: "我的对局",
+    switchGame: "切换",
+    noActiveGames: "还没有已加入的房间。",
     room: "房间",
     you: "你",
     leave: "离开",
@@ -152,6 +181,8 @@ const uiText: Record<Lang, Record<string, string>> = {
     removedSeat: "已删除最后一个空位。",
     createdRoom: "已创建房间 {roomId}。",
     joinedRoom: "已加入房间 {roomId}，座位 {playerId}。",
+    loggedIn: "已登录为 {username}。",
+    loggedOut: "已退出登录。",
     leftRoom: "已离开房间。",
     enterRoomId: "请输入房间号再加入。",
     noRoomToJoin: "当前没有房间可加空位。",
@@ -202,10 +233,19 @@ const uiText: Record<Lang, Record<string, string>> = {
     english: "English",
     subtitle: "Simultaneous turns, hidden commitments, and a very determined map of fantasy realms.",
     createRoom: "Create room",
+    login: "Login",
+    register: "Register",
+    logout: "Log out",
+    username: "Username",
+    password: "Password",
+    authHint: "Sign in first so you can return to your games later.",
     join: "Join",
     roomIdPlaceholder: "Room ID (e.g. ABC123)",
     tipJoin: "Tip: open another window and join the same Room ID.",
     multiplayer: "Multiplayer",
+    activeGames: "My Games",
+    switchGame: "Switch",
+    noActiveGames: "No active games yet.",
     room: "Room",
     you: "You",
     leave: "Leave",
@@ -278,6 +318,8 @@ const uiText: Record<Lang, Record<string, string>> = {
     removedSeat: "Removed the last empty seat.",
     createdRoom: "Created room {roomId}.",
     joinedRoom: "Joined room {roomId} as {playerId}.",
+    loggedIn: "Logged in as {username}.",
+    loggedOut: "Logged out.",
     leftRoom: "Left room.",
     enterRoomId: "Enter a room ID to join.",
     noRoomToJoin: "No room to add a seat.",
@@ -357,14 +399,6 @@ let selectedToLevel: UnitLevelName = "LEVEL_1";
 let message = "";
 let cursorIndex = 0;
 let roomId: string | null = localStorage.getItem("risc_room_id");
-let roomToken: string | null = sessionStorage.getItem("risc_room_token");
-const legacyToken = localStorage.getItem("risc_room_token");
-if (!roomToken && legacyToken) {
-  // Migrate old storage: token should be per-tab (sessionStorage), not shared across windows (localStorage).
-  roomToken = legacyToken;
-  sessionStorage.setItem("risc_room_token", legacyToken);
-  localStorage.removeItem("risc_room_token");
-}
 let joinRoomInput = "";
 if (roomId) {
   joinRoomInput = roomId;
@@ -394,8 +428,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
-  if (roomToken) {
-    headers["X-Player-Token"] = roomToken;
+  if (authToken) {
+    headers["X-Auth-Token"] = authToken;
   }
   const response = await fetch(`http://127.0.0.1:8080${path}`, { headers: { ...headers }, ...init });
   const raw = await response.text();
@@ -625,8 +659,82 @@ function setMessage(next: string): void {
   render();
 }
 
+function persistAuth(response: AuthResponse): void {
+  authToken = response.token;
+  authUsername = response.username;
+  activeGames = response.activeGames ?? [];
+  usernameInput = response.username;
+  passwordInput = "";
+  localStorage.setItem("risc_auth_token", response.token);
+  localStorage.setItem("risc_auth_username", response.username);
+}
+
+function clearAuth(): void {
+  authToken = null;
+  authUsername = null;
+  activeGames = [];
+  passwordInput = "";
+  localStorage.removeItem("risc_auth_token");
+  localStorage.removeItem("risc_auth_username");
+}
+
+function setCurrentRoom(nextRoomId: string | null): void {
+  roomId = nextRoomId;
+  joinRoomInput = nextRoomId ?? "";
+  if (nextRoomId) {
+    localStorage.setItem("risc_room_id", nextRoomId);
+  } else {
+    localStorage.removeItem("risc_room_id");
+  }
+}
+
+function clearPlannedState(): void {
+  plannedMoves = [];
+  plannedAttacks = [];
+  plannedUpgrades = [];
+  boardTerritories = [];
+  planningTurnNumber = null;
+  selectedSource = null;
+  selectedTarget = null;
+  selectedUnits = 1;
+  selectedFromLevel = "BASIC";
+  selectedToLevel = "LEVEL_1";
+}
+
+function clearCurrentGame(): void {
+  clearPlannedState();
+  setupAllocations = {};
+  setupAbandoned = {};
+  setupSubmitted = false;
+  game = null;
+}
+
+function syncActiveGameSummary(): void {
+  if (!game || !roomId) {
+    return;
+  }
+  const summary: ActiveGame = {
+    roomId,
+    playerId: localPlayerId(),
+    phase: game.phase,
+    turnNumber: game.turnNumber,
+    seatCount: game.seatCount,
+    winner: game.winner
+  };
+  const next = activeGames.filter((entry) => entry.roomId !== roomId);
+  activeGames = [summary, ...next];
+}
+
+async function refreshActiveGames(): Promise<void> {
+  if (!authToken) {
+    activeGames = [];
+    return;
+  }
+  activeGames = await api<ActiveGame[]>("/api/rooms");
+}
+
 async function loadGame(): Promise<void> {
-  if (roomId && roomToken) {
+  if (roomId && authToken) {
     game = await api<GameView>(`/api/rooms/${roomId}`);
   } else {
     game = null;
@@ -635,6 +743,7 @@ async function loadGame(): Promise<void> {
   }
   initializeSetupAllocations();
   syncPlanningState();
+  syncActiveGameSummary();
   state.mode = "ready";
   render();
 }
@@ -643,12 +752,9 @@ async function safeLoadGame(): Promise<void> {
   try {
     await loadGame();
   } catch (error) {
-    // Stale room/token is common after backend restart; clear and try again once.
-    if (roomId && roomToken) {
-      roomId = null;
-      roomToken = null;
-      localStorage.removeItem("risc_room_id");
-      sessionStorage.removeItem("risc_room_token");
+    // Stale room selection is common after backend restart; clear and try again once.
+    if (roomId && authToken) {
+      setCurrentRoom(null);
       try {
         await loadGame();
         return;
@@ -657,6 +763,33 @@ async function safeLoadGame(): Promise<void> {
       }
     }
     setMessage(t("failedToLoad", { error: (error as Error).message }));
+  }
+}
+
+async function restoreSession(): Promise<void> {
+  if (!authToken) {
+    clearAuth();
+    clearCurrentGame();
+    setCurrentRoom(null);
+    render();
+    return;
+  }
+  try {
+    const session = await api<AuthResponse>("/api/auth/me");
+    persistAuth(session);
+    await safeLoadGame();
+    if (roomId) {
+      startPolling();
+    }
+    if (!roomId) {
+      render();
+    }
+  } catch {
+    clearAuth();
+    clearCurrentGame();
+    setCurrentRoom(null);
+    stopPolling();
+    render();
   }
 }
 
@@ -726,22 +859,15 @@ function applyMoveLocally(move: PlannedOrder): void {
 }
 
 async function resetGame(): Promise<void> {
-  if (roomId && roomToken) {
-    game = await api<GameView>(`/api/rooms/${roomId}/reset`, { method: "POST" });
-  } else {
-    game = await api<GameView>("/api/game/reset", { method: "POST" });
+  if (!roomId || !authToken) {
+    setMessage(t("startNeedRoom"));
+    return;
   }
-  plannedMoves = [];
-  plannedAttacks = [];
-  plannedUpgrades = [];
-  boardTerritories = [];
-  planningTurnNumber = null;
+  game = await api<GameView>(`/api/rooms/${roomId}/reset`, { method: "POST" });
+  clearPlannedState();
   setupAbandoned = {};
-  selectedSource = null;
-  selectedTarget = null;
-  selectedUnits = 1;
-  selectedFromLevel = "BASIC";
-  selectedToLevel = "LEVEL_1";
+  syncActiveGameSummary();
+  await refreshActiveGames();
   setMessage("");
   initializeSetupAllocations();
   syncPlanningState();
@@ -763,24 +889,17 @@ async function commitSetup(): Promise<void> {
       .filter(([, abandoned]) => abandoned)
       .map(([name]) => name);
     const payload = JSON.stringify({ allocations: setupAllocations, abandon });
-    if (roomId && roomToken) {
-      game = await api<GameView>(`/api/rooms/${roomId}/setup`, { method: "POST", body: payload });
-    } else {
-      game = await api<GameView>("/api/game/setup", { method: "POST", body: payload });
+    if (!roomId || !authToken) {
+      setMessage(t("startNeedRoom"));
+      return;
     }
+    game = await api<GameView>(`/api/rooms/${roomId}/setup`, { method: "POST", body: payload });
     setupSubmitted = true;
-    plannedMoves = [];
-    plannedAttacks = [];
-    plannedUpgrades = [];
-    boardTerritories = [];
-    planningTurnNumber = null;
-    selectedSource = null;
-    selectedTarget = null;
-    selectedUnits = 1;
-    selectedFromLevel = "BASIC";
-    selectedToLevel = "LEVEL_1";
+    clearPlannedState();
     syncPlanningState();
-    if (roomId && roomToken && game.phase === "SETUP" && game.waitingOnPlayers.length > 0) {
+    syncActiveGameSummary();
+    await refreshActiveGames();
+    if (roomId && authToken && game.phase === "SETUP" && game.waitingOnPlayers.length > 0) {
       setMessage(t("setupWaiting", { waiting: game.waitingOnPlayers.join(", ") }));
     } else {
       setMessage(t("setupLocked"));
@@ -910,25 +1029,18 @@ async function commitTurn(): Promise<void> {
         toLevel: order.toLevel ?? null
       }))
     });
-    if (roomId && roomToken) {
-      game = await api<GameView>(`/api/rooms/${roomId}/turn`, { method: "POST", body: payload });
-    } else {
-      game = await api<GameView>("/api/game/turn", { method: "POST", body: payload });
+    if (!roomId || !authToken) {
+      setMessage(t("startNeedRoom"));
+      return;
     }
-    plannedMoves = [];
-    plannedAttacks = [];
-    plannedUpgrades = [];
-    boardTerritories = [];
-    planningTurnNumber = null;
-    selectedUnits = 1;
-    selectedSource = null;
-    selectedTarget = null;
-    selectedFromLevel = "BASIC";
-    selectedToLevel = "LEVEL_1";
+    game = await api<GameView>(`/api/rooms/${roomId}/turn`, { method: "POST", body: payload });
+    clearPlannedState();
     syncPlanningState();
+    syncActiveGameSummary();
+    await refreshActiveGames();
     if (game.phase === "GAME_OVER") {
       setMessage(t("warOver"));
-    } else if (roomId && roomToken && game.waitingOnPlayers.length > 0) {
+    } else if (roomId && authToken && game.waitingOnPlayers.length > 0) {
       setMessage(t("waitingOn", { waiting: game.waitingOnPlayers.join(", ") }));
     } else {
       setMessage(t("turnResolved"));
@@ -1323,6 +1435,25 @@ async function toggleFullscreen(): Promise<void> {
   }
 }
 
+function renderActiveGamesList(): string {
+  if (!authToken) {
+    return "";
+  }
+  if (activeGames.length === 0) {
+    return `<div class="hint">${t("noActiveGames")}</div>`;
+  }
+  return `
+    <div class="log side-log">
+      ${activeGames.map((entry) => `
+        <div class="log-entry log-entry-inline">
+          <span>${entry.roomId} • ${phaseLabel(entry.phase)} • T${entry.turnNumber}</span>
+          <button class="secondary" data-switch-room="${entry.roomId}" ${roomId === entry.roomId ? "disabled" : ""}>${t("switchGame")}</button>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function render(): void {
   captureScrollPositions();
   if (!game) {
@@ -1336,12 +1467,36 @@ function render(): void {
             <option value="en" ${lang === "en" ? "selected" : ""}>${t("english")}</option>
           </select>
         </div>
-        <div class="row">
-          <button id="create-room">${t("createRoom")}</button>
-          <input id="join-room-id" placeholder="${t("roomIdPlaceholder")}" value="${joinRoomInput}" />
-          <button class="secondary" id="join-room">${t("join")}</button>
-        </div>
-        <div class="hint">${message || t("tipJoin")}</div>
+        ${authToken
+          ? `
+            <div class="compact-meta">
+              <div>${t("you")}: <strong>${authUsername ?? ""}</strong></div>
+            </div>
+            <div class="row">
+              <button id="create-room">${t("createRoom")}</button>
+              <input id="join-room-id" placeholder="${t("roomIdPlaceholder")}" value="${joinRoomInput}" />
+              <button class="secondary" id="join-room">${t("join")}</button>
+            </div>
+            <div class="row">
+              <button class="secondary" id="logout-btn">${t("logout")}</button>
+            </div>
+            <section class="players compact-panel">
+              <h2>${t("activeGames")}</h2>
+              ${renderActiveGamesList()}
+            </section>
+          `
+          : `
+            <div class="row">
+              <input id="username-input" placeholder="${t("username")}" value="${usernameInput}" />
+              <input id="password-input" type="password" placeholder="${t("password")}" value="${passwordInput}" />
+            </div>
+            <div class="row">
+              <button id="login-btn">${t("login")}</button>
+              <button class="secondary" id="register-btn">${t("register")}</button>
+            </div>
+            <div class="hint">${t("authHint")}</div>
+          `}
+        <div class="hint">${message || (authToken ? t("tipJoin") : t("authHint"))}</div>
       </section>
     `;
     const langSelect = document.querySelector<HTMLSelectElement>("#lang-select");
@@ -1370,6 +1525,41 @@ function render(): void {
         void joinRoom(joinRoomInput).catch(() => {});
       };
     }
+    const usernameInputEl = document.querySelector<HTMLInputElement>("#username-input");
+    if (usernameInputEl) {
+      usernameInputEl.oninput = () => {
+        usernameInput = usernameInputEl.value;
+      };
+    }
+    const passwordInputEl = document.querySelector<HTMLInputElement>("#password-input");
+    if (passwordInputEl) {
+      passwordInputEl.oninput = () => {
+        passwordInput = passwordInputEl.value;
+      };
+    }
+    const loginButton = document.querySelector<HTMLButtonElement>("#login-btn");
+    if (loginButton) {
+      loginButton.onclick = () => {
+        void submitAuth("login");
+      };
+    }
+    const registerButton = document.querySelector<HTMLButtonElement>("#register-btn");
+    if (registerButton) {
+      registerButton.onclick = () => {
+        void submitAuth("register");
+      };
+    }
+    const logoutButton = document.querySelector<HTMLButtonElement>("#logout-btn");
+    if (logoutButton) {
+      logoutButton.onclick = () => {
+        logout();
+      };
+    }
+    document.querySelectorAll<HTMLButtonElement>("[data-switch-room]").forEach((button) => {
+      button.onclick = () => {
+        void switchGame(button.dataset.switchRoom ?? "");
+      };
+    });
     return;
   }
 
@@ -1452,11 +1642,23 @@ function render(): void {
       <aside class="layout-column left-column" data-scroll-key="left-column">
         <section class="panel controls compact-panel">
           <h2>${t("multiplayer")}</h2>
-          ${roomId && roomToken
+          ${authToken
             ? `
               <div class="compact-meta">
                 <div>${t("room")}: <strong>${roomId}</strong></div>
-                <div>${t("you")}: <strong>${localPlayerId()}</strong></div>
+                <div>${t("you")}: <strong>${authUsername ?? localPlayerId()}</strong></div>
+              </div>
+              <div class="buttons">
+                <button class="secondary" id="logout-btn">${t("logout")}</button>
+              </div>
+              <section class="compact-panel">
+                <h3>${t("activeGames")}</h3>
+                ${renderActiveGamesList()}
+              </section>
+              <div class="row">
+                <button id="create-room">${t("createRoom")}</button>
+                <input id="join-room-id" placeholder="${t("roomIdPlaceholder")}" value="${joinRoomInput}" />
+                <button class="secondary" id="join-room">${t("join")}</button>
               </div>
               <div class="buttons">
                 <button class="secondary" id="leave-room">${t("leave")}</button>
@@ -1755,6 +1957,17 @@ function render(): void {
       leaveRoom();
     };
   }
+  const logoutButton = document.querySelector<HTMLButtonElement>("#logout-btn");
+  if (logoutButton) {
+    logoutButton.onclick = () => {
+      logout();
+    };
+  }
+  document.querySelectorAll<HTMLButtonElement>("[data-switch-room]").forEach((button) => {
+    button.onclick = () => {
+      void switchGame(button.dataset.switchRoom ?? "");
+    };
+  });
 
   const newSeatButton = document.querySelector<HTMLButtonElement>("#new-seat");
   if (newSeatButton) {
@@ -1885,20 +2098,55 @@ window.addEventListener("keydown", (event) => {
 });
 
 bindAutomationHooks();
-void safeLoadGame();
+void restoreSession();
+
+async function submitAuth(mode: "login" | "register"): Promise<void> {
+  try {
+    const username = usernameInput.trim();
+    const password = passwordInput;
+    const response = await api<AuthResponse>(`/api/auth/${mode}`, {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    });
+    persistAuth(response);
+    stopPolling();
+    if (activeGames.length > 0) {
+      setCurrentRoom(activeGames[0].roomId);
+      await safeLoadGame();
+      startPolling();
+    } else {
+      clearCurrentGame();
+      render();
+    }
+    setMessage(t("loggedIn", { username: response.username }));
+  } catch (error) {
+    setMessage((error as Error).message);
+  }
+}
+
+function logout(): void {
+  stopPolling();
+  clearAuth();
+  clearCurrentGame();
+  setCurrentRoom(null);
+  setMessage(t("loggedOut"));
+}
 
 async function createRoom(): Promise<void> {
   try {
-    const response = await api<{ roomId: string; playerId: string; token: string; game: GameView }>("/api/rooms", { method: "POST" });
-    roomId = response.roomId;
-    roomToken = response.token;
-    localStorage.setItem("risc_room_id", roomId);
-    sessionStorage.setItem("risc_room_token", roomToken);
+    if (!authToken) {
+      setMessage(t("authHint"));
+      return;
+    }
+    const response = await api<{ roomId: string; playerId: string; game: GameView }>("/api/rooms", { method: "POST" });
+    setCurrentRoom(response.roomId);
     game = response.game;
     initializeSetupAllocations();
     syncPlanningState();
+    syncActiveGameSummary();
+    await refreshActiveGames();
     startPolling();
-    setMessage(t("createdRoom", { roomId }));
+    setMessage(t("createdRoom", { roomId: response.roomId }));
   } catch (error) {
     setMessage((error as Error).message);
     throw error;
@@ -1907,21 +2155,24 @@ async function createRoom(): Promise<void> {
 
 async function joinRoom(input: string): Promise<void> {
   try {
+    if (!authToken) {
+      setMessage(t("authHint"));
+      return;
+    }
     const trimmed = (input ?? "").trim().toUpperCase();
     if (!trimmed) {
       setMessage(t("enterRoomId"));
       return;
     }
-    const response = await api<{ roomId: string; playerId: string; token: string; game: GameView }>(`/api/rooms/${trimmed}/join`, { method: "POST" });
-    roomId = response.roomId;
-    roomToken = response.token;
-    localStorage.setItem("risc_room_id", roomId);
-    sessionStorage.setItem("risc_room_token", roomToken);
+    const response = await api<{ roomId: string; playerId: string; game: GameView }>(`/api/rooms/${trimmed}/join`, { method: "POST" });
+    setCurrentRoom(response.roomId);
     game = response.game;
     initializeSetupAllocations();
     syncPlanningState();
+    syncActiveGameSummary();
+    await refreshActiveGames();
     startPolling();
-    setMessage(t("joinedRoom", { roomId, playerId: response.playerId }));
+    setMessage(t("joinedRoom", { roomId: response.roomId, playerId: response.playerId }));
   } catch (error) {
     setMessage((error as Error).message);
     throw error;
@@ -1929,20 +2180,10 @@ async function joinRoom(input: string): Promise<void> {
 }
 
 function leaveRoom(): void {
-  roomId = null;
-  roomToken = null;
-  localStorage.removeItem("risc_room_id");
-  sessionStorage.removeItem("risc_room_token");
   stopPolling();
-  plannedMoves = [];
-  plannedAttacks = [];
-  plannedUpgrades = [];
-  boardTerritories = [];
-  planningTurnNumber = null;
-  setupAllocations = {};
-  setupAbandoned = {};
+  setCurrentRoom(null);
+  clearCurrentGame();
   setMessage(t("leftRoom"));
-  game = null;
   render();
 }
 
@@ -1962,22 +2203,17 @@ async function joinAsNewSeat(): Promise<void> {
 }
 
 async function startGame(): Promise<void> {
-  if (!roomId || !roomToken) {
+  if (!roomId || !authToken) {
     setMessage(t("startNeedRoom"));
     return;
   }
   try {
     game = await api<GameView>(`/api/rooms/${roomId}/start`, { method: "POST" });
-    plannedMoves = [];
-    plannedAttacks = [];
-    plannedUpgrades = [];
-    boardTerritories = [];
-    planningTurnNumber = null;
-    selectedSource = null;
-    selectedTarget = null;
-    selectedUnits = 1;
+    clearPlannedState();
     initializeSetupAllocations();
     syncPlanningState();
+    syncActiveGameSummary();
+    await refreshActiveGames();
     setMessage(game.phase === "SETUP" ? t("gameStartedSetup") : t("gameStarted"));
   } catch (error) {
     setMessage((error as Error).message);
@@ -1986,7 +2222,7 @@ async function startGame(): Promise<void> {
 }
 
 async function removeSeat(): Promise<void> {
-  if (!roomId || !roomToken) {
+  if (!roomId || !authToken) {
     setMessage(t("startNeedRoom"));
     return;
   }
@@ -1997,6 +2233,18 @@ async function removeSeat(): Promise<void> {
   } catch (error) {
     setMessage((error as Error).message);
     throw error;
+  }
+}
+
+async function switchGame(nextRoomId: string): Promise<void> {
+  if (!nextRoomId || !authToken) {
+    return;
+  }
+  stopPolling();
+  setCurrentRoom(nextRoomId);
+  await safeLoadGame();
+  if (roomId) {
+    startPolling();
   }
 }
 
@@ -2019,7 +2267,7 @@ function stopPolling(): void {
 }
 
 async function pollOnce(): Promise<void> {
-  if (!roomId || !roomToken || pollInFlight) {
+  if (!roomId || !authToken || pollInFlight) {
     return;
   }
   pollInFlight = true;
@@ -2027,14 +2275,11 @@ async function pollOnce(): Promise<void> {
     game = await api<GameView>(`/api/rooms/${roomId}`);
     initializeSetupAllocations();
     syncPlanningState();
+    syncActiveGameSummary();
     render();
   } catch {
     // Ignore transient polling errors.
   } finally {
     pollInFlight = false;
   }
-}
-
-if (roomId && roomToken) {
-  startPolling();
 }
