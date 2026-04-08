@@ -31,7 +31,7 @@ frontend-install:
 install: backend-install frontend-install
 
 backend-dev:
-	cd $(BACKEND_DIR) && mvn spring-boot:run
+	cd $(BACKEND_DIR) && mvn -Dspring-boot.run.fork=false spring-boot:run
 
 frontend-dev:
 	cd $(FRONTEND_DIR) && npm run dev -- --host 0.0.0.0 --port $(FRONTEND_PORT)
@@ -41,7 +41,7 @@ backend-start:
 	@if [ -f "$(BACKEND_PID_FILE)" ] && kill -0 "$$(cat "$(BACKEND_PID_FILE)")" 2>/dev/null; then \
 		echo "Backend already running with PID $$(cat "$(BACKEND_PID_FILE)")"; \
 	else \
-		cd $(BACKEND_DIR) && nohup mvn spring-boot:run > "$(RUN_DIR)/backend.log" 2>&1 & echo $$! > "$(BACKEND_PID_FILE)"; \
+		cd $(BACKEND_DIR) && nohup mvn -Dspring-boot.run.fork=false spring-boot:run > "$(RUN_DIR)/backend.log" 2>&1 & echo $$! > "$(BACKEND_PID_FILE)"; \
 		echo "Backend started with PID $$(cat "$(BACKEND_PID_FILE)")"; \
 	fi
 
