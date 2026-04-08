@@ -35,5 +35,6 @@ make backend-stop
 ## Notes
 
 - Backend uses Spring Boot and exposes `GET /api/health`.
+- If auth endpoints (e.g. `POST /api/auth/register`) 404 unexpectedly, ensure you don't have a stale backend process still listening on 8080. `make backend-stop` stops the backend started by `make dev-up`.
 - Database migration files live under `backend/src/main/resources/db/migration`.
 - `make dev-up` starts backend first, waits for health success, then starts frontend.
