@@ -208,6 +208,29 @@ const uiText: Record<Lang, Record<string, string>> = {
     techOnlyOnce: "每回合最多 1 次科技升级，下一回合生效。",
     sourceForUpgrade: "升级领地",
     territorySizeMap: "规模 S{size}",
+    turnShort: "回合",
+    resourceFood: "粮食",
+    resourceTechnology: "科技",
+    unowned: "无人占领",
+    orderMoveLabel: "移动",
+    orderAttackLabel: "进攻",
+    orderTechLabel: "科技升级",
+    orderUnitLabel: "兵种升级",
+    orderIn: "在",
+    orderFrom: "从",
+    orderTo: "到",
+    levelBasic: "基础兵",
+    level1: "1级兵",
+    level2: "2级兵",
+    level3: "3级兵",
+    level4: "4级兵",
+    level5: "5级兵",
+    level6: "6级兵",
+    playerGreen: "绿色",
+    playerBlue: "蓝色",
+    playerRed: "红色",
+    playerYellow: "黄色",
+    playerPurple: "紫色",
     warOver: "战争结束。",
     turnResolved: "回合已结算，继续规划下一回合。",
     chooseOwnSource: "来源必须选择你自己的领地。",
@@ -345,6 +368,29 @@ const uiText: Record<Lang, Record<string, string>> = {
     techOnlyOnce: "At most one tech upgrade per turn. It completes next turn.",
     sourceForUpgrade: "Upgrade territory",
     territorySizeMap: "Size S{size}",
+    turnShort: "T",
+    resourceFood: "Food",
+    resourceTechnology: "Technology",
+    unowned: "Unowned",
+    orderMoveLabel: "Move",
+    orderAttackLabel: "Attack",
+    orderTechLabel: "Tech Upgrade",
+    orderUnitLabel: "Unit Upgrade",
+    orderIn: "in",
+    orderFrom: "from",
+    orderTo: "to",
+    levelBasic: "Basic",
+    level1: "Level 1",
+    level2: "Level 2",
+    level3: "Level 3",
+    level4: "Level 4",
+    level5: "Level 5",
+    level6: "Level 6",
+    playerGreen: "Green",
+    playerBlue: "Blue",
+    playerRed: "Red",
+    playerYellow: "Yellow",
+    playerPurple: "Purple",
     warOver: "The war is over.",
     turnResolved: "Turn resolved. Plan your next move.",
     chooseOwnSource: "Choose one of your territories as the source.",
@@ -371,6 +417,13 @@ function t(key: string, vars?: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (_, name) => String(vars?.[name] ?? ""));
 }
 
+function setLanguage(nextLang: string): void {
+  lang = nextLang === "en" ? "en" : "zh";
+  localStorage.setItem("risc_lang", lang);
+  document.documentElement.lang = lang;
+  render();
+}
+
 function phaseLabel(phase: Phase): string {
   if (lang === "en") {
     return phase;
@@ -379,6 +432,45 @@ function phaseLabel(phase: Phase): string {
   if (phase === "SETUP") return t("setup");
   if (phase === "ORDERS") return t("ordersPhase");
   return t("gameOver");
+}
+
+function resourceLabel(name: string): string {
+  if (name === "FOOD") {
+    return t("resourceFood");
+  }
+  if (name === "TECHNOLOGY") {
+    return t("resourceTechnology");
+  }
+  return name;
+}
+
+function unitLevelLabel(level: string): string {
+  if (level === "BASIC") return t("levelBasic");
+  if (level === "LEVEL_1") return t("level1");
+  if (level === "LEVEL_2") return t("level2");
+  if (level === "LEVEL_3") return t("level3");
+  if (level === "LEVEL_4") return t("level4");
+  if (level === "LEVEL_5") return t("level5");
+  if (level === "LEVEL_6") return t("level6");
+  return level;
+}
+
+function playerLabel(playerId: string | null): string {
+  if (playerId === "GREEN") return t("playerGreen");
+  if (playerId === "BLUE") return t("playerBlue");
+  if (playerId === "RED") return t("playerRed");
+  if (playerId === "YELLOW") return t("playerYellow");
+  if (playerId === "PURPLE") return t("playerPurple");
+  if (playerId == null) return t("unowned");
+  return playerId;
+}
+
+function displayPlayerName(name: string): string {
+  const normalized = name.trim().toUpperCase();
+  if (["GREEN", "BLUE", "RED", "YELLOW", "PURPLE"].includes(normalized)) {
+    return playerLabel(normalized);
+  }
+  return name;
 }
 
 let game: GameView | null = null;
@@ -657,6 +749,13 @@ function setupLeft(): number {
 function setMessage(next: string): void {
   message = next;
   render();
+}
+
+function gameSignature(view: GameView | null): string {
+  if (!view) {
+    return "null";
+  }
+  return JSON.stringify(view);
 }
 
 function persistAuth(response: AuthResponse): void {
@@ -1374,7 +1473,7 @@ function renderTurnSummary(entries: string[]): string {
         <strong>${summary.territory}</strong>
         <div>${movementText}</div>
         <div>${reinforcementText}</div>
-        <div>${t("final")} ${finalUnitsText}${summary.owner ? ` • ${summary.owner}` : ""}</div>
+        <div>${t("final")} ${finalUnitsText}${summary.owner ? ` • ${displayPlayerName(summary.owner)}` : ""}</div>
       </div>
     `;
   }).join("");
@@ -1382,18 +1481,19 @@ function renderTurnSummary(entries: string[]): string {
 
 function describeQueuedOrder(order: PlannedOrder): string {
   if (order.type === "UPGRADE_TECH") {
-    return "UPGRADE_TECH";
+    return t("orderTechLabel");
   }
   if (order.type === "UPGRADE_UNIT") {
-    return `UPGRADE_UNIT ${order.units} in ${order.source} ${order.fromLevel} -> ${order.toLevel}`;
+    return `${t("orderUnitLabel")} ${order.units} ${t("orderIn")} ${order.source} ${unitLevelLabel(order.fromLevel ?? "")} -> ${unitLevelLabel(order.toLevel ?? "")}`;
   }
-  return `${order.type} ${order.units} from ${order.source} to ${order.target}`;
+  const orderLabel = order.type === "MOVE" ? t("orderMoveLabel") : t("orderAttackLabel");
+  return `${orderLabel} ${order.units} ${t("orderFrom")} ${order.source} ${t("orderTo")} ${order.target}`;
 }
 
 function formatResourceMap(resources: Record<string, number>): string {
   return Object.entries(resources)
     .filter(([, amount]) => amount > 0)
-    .map(([name, amount]) => `${name} ${amount}`)
+    .map(([name, amount]) => `${resourceLabel(name)} ${amount}`)
     .join(" • ") || "0";
 }
 
@@ -1406,9 +1506,9 @@ function renderTerritoryIntel(territory: Territory | undefined): string {
     return `<div class="log-entry">${t("noTerritoryFocus")}</div>`;
   }
   const summary = summarizeTerritoryIntel(territory);
-  const owner = territory.owner ?? "UNOWNED";
-  const resources = summary.resourceEntries.map(([name, amount]) => `${name} ${amount}`).join(" • ") || "0";
-  const units = summary.unitEntries.map(([name, amount]) => `${name} ${amount}`).join(" • ") || "0";
+  const owner = playerLabel(territory.owner);
+  const resources = summary.resourceEntries.map(([name, amount]) => `${resourceLabel(name)} ${amount}`).join(" • ") || "0";
+  const units = summary.unitEntries.map(([name, amount]) => `${unitLevelLabel(name)} ${amount}`).join(" • ") || "0";
   return `
     <div class="intel-card">
       <strong>${territory.name}</strong>
@@ -1446,7 +1546,7 @@ function renderActiveGamesList(): string {
     <div class="log side-log">
       ${activeGames.map((entry) => `
         <div class="log-entry log-entry-inline">
-          <span>${entry.roomId} • ${phaseLabel(entry.phase)} • T${entry.turnNumber}</span>
+          <span>${entry.roomId} • ${phaseLabel(entry.phase)} • ${t("turnShort")}${entry.turnNumber}</span>
           <button class="secondary" data-switch-room="${entry.roomId}" ${roomId === entry.roomId ? "disabled" : ""}>${t("switchGame")}</button>
         </div>
       `).join("")}
@@ -1499,14 +1599,6 @@ function render(): void {
         <div class="hint">${message || (authToken ? t("tipJoin") : t("authHint"))}</div>
       </section>
     `;
-    const langSelect = document.querySelector<HTMLSelectElement>("#lang-select");
-    if (langSelect) {
-      langSelect.onchange = () => {
-        lang = langSelect.value === "en" ? "en" : "zh";
-        localStorage.setItem("risc_lang", lang);
-        render();
-      };
-    }
     const createBtn = document.querySelector<HTMLButtonElement>("#create-room");
     if (createBtn) {
       createBtn.onclick = () => {
@@ -1580,7 +1672,7 @@ function render(): void {
             <div class="seat-swatch" style="background:${ownerPalette[seatId]};"></div>
             <div class="seat-meta">
               <div class="seat-id">${seatId}</div>
-              <div class="seat-name">${occupant ? occupant.displayName : ""}</div>
+              <div class="seat-name">${occupant ? displayPlayerName(occupant.displayName) : ""}</div>
             </div>
             ${showRemove ? `<button class="secondary seat-remove" data-seat-remove="${seatId}">${t("remove")}</button>` : ""}
           </div>
@@ -1704,19 +1796,19 @@ function render(): void {
               <strong>${t("currentSelection")}</strong>
               <span>${t("source")}: ${selectedSource ?? t("none")}</span>
               <span>${t("target")}: ${selectedTarget ?? t("none")}</span>
-              <span>${t("estimatedCost")}: FOOD ${plannedCosts.food + previewCost.food} • TECHNOLOGY ${plannedCosts.technology + previewCost.technology}</span>
+              <span>${t("estimatedCost")}: ${resourceLabel("FOOD")} ${plannedCosts.food + previewCost.food} • ${resourceLabel("TECHNOLOGY")} ${plannedCosts.technology + previewCost.technology}</span>
             </div>
             <label class="units-field">${t("units")}<input id="units-input" type="number" min="1" value="${selectedUnits}" /></label>
           </div>
           <div class="upgrade-grid">
             <label>${t("fromLevel")}
               <select id="from-level">
-                ${unitLevels.map((level) => `<option value="${level}" ${selectedFromLevel === level ? "selected" : ""}>${level}</option>`).join("")}
+                ${unitLevels.map((level) => `<option value="${level}" ${selectedFromLevel === level ? "selected" : ""}>${unitLevelLabel(level)}</option>`).join("")}
               </select>
             </label>
             <label>${t("toLevel")}
               <select id="to-level">
-                ${unitLevels.map((level) => `<option value="${level}" ${selectedToLevel === level ? "selected" : ""}>${level}</option>`).join("")}
+                ${unitLevels.map((level) => `<option value="${level}" ${selectedToLevel === level ? "selected" : ""}>${unitLevelLabel(level)}</option>`).join("")}
               </select>
             </label>
           </div>
@@ -1765,7 +1857,7 @@ function render(): void {
           <h2>${t("factions")}</h2>
           ${game.players.map((player) => `
             <article>
-              <strong>${player.displayName}</strong>
+              <strong>${displayPlayerName(player.displayName)}</strong>
               <div>${t("territoriesLabel")}: ${player.territories}</div>
               <div>${t("totalUnitsLabel")}: ${player.totalUnits}</div>
               <div>${t("techLevelLabel")}: ${player.maxTechnologyLevel}</div>
@@ -1795,15 +1887,6 @@ function render(): void {
     </div>
   `;
   restoreScrollPositions();
-
-  const langSelect = document.querySelector<HTMLSelectElement>("#lang-select");
-  if (langSelect) {
-    langSelect.onchange = () => {
-      lang = langSelect.value === "en" ? "en" : "zh";
-      localStorage.setItem("risc_lang", lang);
-      render();
-    };
-  }
 
   const canvas = document.querySelector<HTMLCanvasElement>("#game-canvas");
   if (canvas) {
@@ -2097,7 +2180,19 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  if (target.id !== "lang-select") {
+    return;
+  }
+  setLanguage(target.value);
+});
+
 bindAutomationHooks();
+document.documentElement.lang = lang;
 void restoreSession();
 
 async function submitAuth(mode: "login" | "register"): Promise<void> {
@@ -2272,11 +2367,16 @@ async function pollOnce(): Promise<void> {
   }
   pollInFlight = true;
   try {
-    game = await api<GameView>(`/api/rooms/${roomId}`);
+    const nextGame = await api<GameView>(`/api/rooms/${roomId}`);
+    const previousSignature = gameSignature(game);
+    const nextSignature = gameSignature(nextGame);
+    game = nextGame;
     initializeSetupAllocations();
     syncPlanningState();
     syncActiveGameSummary();
-    render();
+    if (previousSignature !== nextSignature) {
+      render();
+    }
   } catch {
     // Ignore transient polling errors.
   } finally {

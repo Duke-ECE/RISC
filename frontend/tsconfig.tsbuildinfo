@@ -1,1 +1,1 @@
-{"root":["./src/logsections.test.ts","./src/logsections.ts","./src/main.ts","./src/turnsummary.test.ts","./src/turnsummary.ts"],"version":"5.9.3"}
+{"root":["./src/logsections.test.ts","./src/logsections.ts","./src/main.ts","./src/pj2orders.test.ts","./src/pj2orders.ts","./src/territoryintel.test.ts","./src/territoryintel.ts","./src/turnsummary.test.ts","./src/turnsummary.ts"],"version":"5.9.3"}
