@@ -1,15 +1,17 @@
 package com.risc.backend.rooms;
 
+import com.risc.backend.auth.ActiveGameView;
 import com.risc.backend.game.GameEngine;
 import com.risc.backend.game.GamePhase;
 import com.risc.backend.game.OrderCommand;
 import com.risc.backend.game.OrderType;
 import com.risc.backend.game.PlayerId;
+import com.risc.backend.game.ResourceType;
+import com.risc.backend.game.UnitLevel;
 import com.risc.backend.game.dto.GameView;
 import com.risc.backend.game.dto.OrderRequest;
 import com.risc.backend.game.dto.PlacementRequest;
 import com.risc.backend.game.dto.PlayerView;
-import com.risc.backend.game.dto.TerritoryView;
 import com.risc.backend.game.dto.TurnRequest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -38,7 +40,7 @@ public class RoomService {
   private final SecureRandom random = new SecureRandom();
   private final Map<String, GameRoom> rooms = new HashMap<>();
 
-  public synchronized RoomJoinResponse createRoom() {
+  public synchronized RoomJoinResponse createRoom(String accountUsername) {
     String roomId = generateRoomId();
     while (rooms.containsKey(roomId)) {
       roomId = generateRoomId();
@@ -47,63 +49,69 @@ public class RoomService {
     GameRoom room = new GameRoom(roomId);
     rooms.put(roomId, room);
 
-    String token = room.joinAs(PlayerId.GREEN);
-    GameView view = room.view(PlayerId.GREEN);
-    return new RoomJoinResponse(roomId, PlayerId.GREEN.name(), token, view);
-  }
-
-  public synchronized RoomJoinResponse joinRoom(String roomId) {
-    GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.nextJoinSeat();
-    String token = room.joinAs(playerId);
+    PlayerId playerId = room.joinAs(accountUsername, PlayerId.GREEN);
     GameView view = room.view(playerId);
-    return new RoomJoinResponse(roomId, playerId.name(), token, view);
+    return new RoomJoinResponse(roomId, playerId.name(), view);
   }
 
-  public synchronized GameView viewRoom(String roomId, String token) {
+  public synchronized RoomJoinResponse joinRoom(String roomId, String accountUsername) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.joinAs(accountUsername, room.nextJoinSeat(accountUsername));
+    GameView view = room.view(playerId);
+    return new RoomJoinResponse(roomId, playerId.name(), view);
+  }
+
+  public synchronized List<ActiveGameView> listGamesFor(String accountUsername) {
+    return rooms.values().stream()
+        .map(room -> room.summaryFor(accountUsername))
+        .filter(Objects::nonNull)
+        .toList();
+  }
+
+  public synchronized GameView viewRoom(String roomId, String accountUsername) {
+    GameRoom room = requireRoom(roomId);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     return room.view(playerId);
   }
 
-  public synchronized GameView resetRoom(String roomId, String token) {
+  public synchronized GameView resetRoom(String roomId, String accountUsername) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.resetGameToLobby();
     return room.view(playerId);
   }
 
-  public synchronized GameView startRoom(String roomId, String token) {
+  public synchronized GameView startRoom(String roomId, String accountUsername) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.start(playerId);
     return room.view(playerId);
   }
 
-  public synchronized GameView addSeat(String roomId, String token) {
+  public synchronized GameView addSeat(String roomId, String accountUsername) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.addSeat(playerId);
     return room.view(playerId);
   }
 
-  public synchronized GameView removeSeat(String roomId, String token) {
+  public synchronized GameView removeSeat(String roomId, String accountUsername) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.removeLastEmptySeat(playerId);
     return room.view(playerId);
   }
 
-  public synchronized GameView commitSetup(String roomId, String token, PlacementRequest request) {
+  public synchronized GameView commitSetup(String roomId, String accountUsername, PlacementRequest request) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.commitSetup(playerId, request);
     return room.view(playerId);
   }
 
-  public synchronized GameView commitTurn(String roomId, String token, TurnRequest request) {
+  public synchronized GameView commitTurn(String roomId, String accountUsername, TurnRequest request) {
     GameRoom room = requireRoom(roomId);
-    PlayerId playerId = room.playerForToken(token);
+    PlayerId playerId = room.playerForAccount(accountUsername);
     room.commitTurn(playerId, request);
     return room.view(playerId);
   }
@@ -127,8 +135,8 @@ public class RoomService {
 
   private static final class GameRoom {
     private final String roomId;
-    private final Map<String, PlayerId> tokenToPlayer = new HashMap<>();
-    private final EnumMap<PlayerId, String> playerToToken = new EnumMap<>(PlayerId.class);
+    private final Map<String, PlayerId> accountToPlayer = new HashMap<>();
+    private final EnumMap<PlayerId, String> playerToAccount = new EnumMap<>(PlayerId.class);
     private final List<PlayerId> joinedPlayers = new ArrayList<>();
     private int seatCount = 2;
 
@@ -157,7 +165,11 @@ public class RoomService {
               0,
               false,
               playerId == viewer,
-              0))
+              0,
+              1,
+              Map.of(
+                  ResourceType.FOOD.name(), 0,
+                  ResourceType.TECHNOLOGY.name(), 0)))
           .toList();
       List<String> log = new ArrayList<>();
       log.add("Lobby: room created. Host (Green) starts the game when ready.");
@@ -178,7 +190,11 @@ public class RoomService {
           waitingOnPlayers(viewer).stream().map(PlayerId::name).toList());
     }
 
-    private PlayerId nextJoinSeat() {
+    private PlayerId nextJoinSeat(String accountUsername) {
+      PlayerId existing = accountToPlayer.get(accountUsername);
+      if (existing != null) {
+        return existing;
+      }
       if (engine != null) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; no more joins allowed.");
       }
@@ -193,18 +209,21 @@ public class RoomService {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No open seats.");
     }
 
-    private String joinAs(PlayerId playerId) {
+    private PlayerId joinAs(String accountUsername, PlayerId playerId) {
+      PlayerId existing = accountToPlayer.get(accountUsername);
+      if (existing != null) {
+        return existing;
+      }
       if (engine != null) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Game already started; no more joins allowed.");
       }
       if (joinedPlayers.contains(playerId)) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Player already joined: " + playerId.name());
       }
-      String token = UUID.randomUUID().toString();
-      tokenToPlayer.put(token, playerId);
-      playerToToken.put(playerId, token);
+      accountToPlayer.put(accountUsername, playerId);
+      playerToAccount.put(playerId, accountUsername);
       joinedPlayers.add(playerId);
-      return token;
+      return playerId;
     }
 
     private void addSeat(PlayerId requester) {
@@ -236,13 +255,10 @@ public class RoomService {
       seatCount -= 1;
     }
 
-    private PlayerId playerForToken(String token) {
-      if (token == null || token.isBlank()) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing player token.");
-      }
-      PlayerId playerId = tokenToPlayer.get(token);
+    private PlayerId playerForAccount(String accountUsername) {
+      PlayerId playerId = accountToPlayer.get(accountUsername);
       if (playerId == null) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid player token.");
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This account is not a member of room " + roomId + ".");
       }
       return playerId;
     }
@@ -272,6 +288,18 @@ public class RoomService {
       setupCommitted.clear();
       committedOrders.clear();
       committedOrdersTurnNumber = 1;
+    }
+
+    private ActiveGameView summaryFor(String accountUsername) {
+      PlayerId playerId = accountToPlayer.get(accountUsername);
+      if (playerId == null) {
+        return null;
+      }
+      if (engine == null) {
+        return new ActiveGameView(roomId, playerId.name(), GamePhase.LOBBY.name(), 0, seatCount, null);
+      }
+      return new ActiveGameView(roomId, playerId.name(), engine.phase().name(), engine.turnNumber(), seatCount,
+          engine.winner() == null ? null : engine.winner().name());
     }
 
     private void commitSetup(PlayerId playerId, PlacementRequest request) {
@@ -370,13 +398,26 @@ public class RoomService {
 
     private List<OrderCommand> toPlayerOrders(PlayerId playerId, List<OrderRequest> orders) {
       return orders.stream()
-          .map(order -> new OrderCommand(
-              OrderType.valueOf(order.type().trim().toUpperCase()),
-              order.source(),
-              order.target(),
-              order.units(),
-              playerId))
+          .map(order -> {
+            OrderType type = OrderType.valueOf(order.type().trim().toUpperCase(Locale.ROOT));
+            UnitLevel fromLevel = parseLevel(order.fromLevel());
+            UnitLevel toLevel = parseLevel(order.toLevel());
+            if (type == OrderType.UPGRADE_TECH) {
+              return OrderCommand.upgradeTech(playerId);
+            }
+            if (type == OrderType.UPGRADE_UNIT) {
+              return OrderCommand.upgradeUnit(order.source(), order.units(), playerId, fromLevel, toLevel);
+            }
+            return new OrderCommand(type, order.source(), order.target(), order.units(), playerId);
+          })
           .toList();
+    }
+
+    private UnitLevel parseLevel(String raw) {
+      if (raw == null || raw.isBlank()) {
+        return null;
+      }
+      return UnitLevel.valueOf(raw.trim().toUpperCase(Locale.ROOT));
     }
   }
 }

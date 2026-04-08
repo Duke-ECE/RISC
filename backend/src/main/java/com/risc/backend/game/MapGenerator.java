@@ -1,6 +1,7 @@
 package com.risc.backend.game;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -16,6 +17,13 @@ import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.triangulate.VoronoiDiagramBuilder;
 
 public final class MapGenerator {
+  private record TerritoryBalanceTemplate(int size, int foodProduction, int technologyProduction) {}
+
+  private static final List<TerritoryBalanceTemplate> STARTING_TEMPLATES = List.of(
+      new TerritoryBalanceTemplate(1, 3, 0),
+      new TerritoryBalanceTemplate(2, 2, 1),
+      new TerritoryBalanceTemplate(3, 1, 2));
+
   private MapGenerator() {}
 
   public static List<TerritoryDefinition> generate(List<PlayerId> players, int boardWidth, int boardHeight, Random random) {
@@ -172,11 +180,17 @@ public final class MapGenerator {
       List<MapVertex> vertices = polygon == null ? List.of() : toVertices(polygon);
       Coordinate centroid = polygon == null ? sites.get(i) : polygon.getCentroid().getCoordinate();
       String name = territoryNames.get(i);
+      TerritoryBalanceTemplate template = STARTING_TEMPLATES.get(i % STARTING_TEMPLATES.size());
+      EnumMap<ResourceType, Integer> resourceProduction = new EnumMap<>(ResourceType.class);
+      resourceProduction.put(ResourceType.FOOD, template.foodProduction());
+      resourceProduction.put(ResourceType.TECHNOLOGY, template.technologyProduction());
       result.add(new TerritoryDefinition(
           name,
           (int) Math.round(centroid.x),
           (int) Math.round(centroid.y),
           territoryOwners.get(i),
+          template.size(),
+          Map.copyOf(resourceProduction),
           neighbors.get(name).stream().toList(),
           vertices));
     }
